@@ -50,9 +50,12 @@ const (
 type CompressionType string
 
 const (
-	noneType  CompressionType = "none"
-	gzipType  CompressionType = "gzip"
-	bzip2Type CompressionType = "bzip2"
+	noneType   CompressionType = "none"
+	gzipType   CompressionType = "gzip"
+	bzip2Type  CompressionType = "bzip2"
+	zstdType   CompressionType = "zstd"
+	s2Type     CompressionType = "s2"
+	snappyType CompressionType = "snappy"
 )
 
 const (
@@ -87,7 +90,7 @@ func (c *CompressionType) UnmarshalXML(d *xml.Decoder, start xml.StartElement) e
 	}
 
 	switch parsedType {
-	case noneType, gzipType, bzip2Type:
+	case noneType, gzipType, bzip2Type, zstdType, snappyType, s2Type:
 	default:
 		return errInvalidCompressionFormat(fmt.Errorf("invalid compression format '%v'", s))
 	}

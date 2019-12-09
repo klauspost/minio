@@ -24,7 +24,9 @@ import (
 	"sync"
 	"sync/atomic"
 
-	gzip "github.com/klauspost/pgzip"
+	"github.com/klauspost/compress/s2"
+	"github.com/klauspost/compress/zstd"
+	"github.com/klauspost/pgzip"
 )
 
 type countUpReader struct {
@@ -49,10 +51,11 @@ func newCountUpReader(reader io.Reader) *countUpReader {
 }
 
 type progressReader struct {
-	rc              io.ReadCloser
 	scannedReader   *countUpReader
 	processedReader *countUpReader
 
+	// Slice of closers to run
+	close    []io.Closer
 	closedMu sync.Mutex
 	closed   bool
 }
@@ -75,7 +78,14 @@ func (pr *progressReader) Close() error {
 		return nil
 	}
 	pr.closed = true
-	return pr.rc.Close()
+	var err error
+	for _, c := range pr.close {
+		err2 := c.Close()
+		if err == nil && err2 != nil {
+			err = err2
+		}
+	}
+	return err
 }
 
 func (pr *progressReader) Stats() (bytesScanned, bytesProcessed int64) {
@@ -83,6 +93,10 @@ func (pr *progressReader) Stats() (bytesScanned, bytesProcessed int64) {
 }
 
 func newProgressReader(rc io.ReadCloser, compType CompressionType) (*progressReader, error) {
+	pr := progressReader{
+		close: []io.Closer{rc},
+	}
+
 	scannedReader := newCountUpReader(rc)
 	var r io.Reader
 	var err error
@@ -91,18 +105,38 @@ func newProgressReader(rc io.ReadCloser, compType CompressionType) (*progressRea
 	case noneType:
 		r = scannedReader
 	case gzipType:
-		if r, err = gzip.NewReader(scannedReader); err != nil {
+		rc, err = pgzip.NewReader(scannedReader)
+		if err != nil {
 			return nil, errTruncatedInput(err)
 		}
+		r = rc
+		pr.close = append(pr.close, rc)
 	case bzip2Type:
 		r = bzip2.NewReader(scannedReader)
+	case snappyType, s2Type:
+		r = s2.NewReader(scannedReader)
+	case zstdType:
+		rc, err := zstd.NewReader(scannedReader)
+		if err != nil {
+			return nil, err
+		}
+		r = rc
+		pr.close = append(pr.close, closeWrapper{fn: rc.Close})
 	default:
 		return nil, errInvalidCompressionFormat(fmt.Errorf("unknown compression type '%v'", compType))
 	}
+	pr.scannedReader = scannedReader
+	pr.processedReader = newCountUpReader(r)
 
-	return &progressReader{
-		rc:              rc,
-		scannedReader:   scannedReader,
-		processedReader: newCountUpReader(r),
-	}, nil
+	return &pr, nil
+}
+
+// closeWrapper wraps a function call as a closer.
+type closeWrapper struct {
+	fn func()
+}
+
+func (c closeWrapper) Close() error {
+	c.fn()
+	return nil
 }
