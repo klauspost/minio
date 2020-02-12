@@ -29,7 +29,6 @@ import (
 	"time"
 
 	humanize "github.com/dustin/go-humanize"
-	"github.com/minio/cli"
 	"github.com/minio/minio-go/v6/pkg/set"
 	"github.com/minio/minio/cmd/config"
 	"github.com/minio/minio/cmd/logger"
@@ -53,8 +52,7 @@ const (
 // Endpoint - any type of endpoint.
 type Endpoint struct {
 	*url.URL
-	IsLocal  bool
-	SetIndex int
+	IsLocal bool
 }
 
 func (endpoint Endpoint) String() string {
@@ -194,6 +192,24 @@ type ZoneEndpoints struct {
 // EndpointZones - list of list of endpoints
 type EndpointZones []ZoneEndpoints
 
+// Add add zone endpoints
+func (l *EndpointZones) Add(zeps ZoneEndpoints) error {
+	existSet := set.NewStringSet()
+	for _, zep := range *l {
+		for _, ep := range zep.Endpoints {
+			existSet.Add(ep.String())
+		}
+	}
+	// Validate if there are duplicate endpoints across zones
+	for _, ep := range zeps.Endpoints {
+		if existSet.Contains(ep.String()) {
+			return fmt.Errorf("duplicate endpoints found")
+		}
+	}
+	*l = append(*l, zeps)
+	return nil
+}
+
 // FirstLocal returns true if the first endpoint is local.
 func (l EndpointZones) FirstLocal() bool {
 	return l[0].Endpoints[0].IsLocal
@@ -229,8 +245,41 @@ func (endpoints Endpoints) GetString(i int) string {
 	return endpoints[i].String()
 }
 
+func hostResolveToLocalhost(endpoint Endpoint) bool {
+	hostIPs, err := getHostIP(endpoint.Hostname())
+	if err != nil {
+		// Log the message to console about the host resolving
+		reqInfo := (&logger.ReqInfo{}).AppendTags(
+			"host",
+			endpoint.Hostname(),
+		)
+		ctx := logger.SetReqInfo(context.Background(), reqInfo)
+		logger.LogIf(ctx, err, logger.Application)
+		return false
+	}
+	var loopback int
+	for _, hostIP := range hostIPs.ToSlice() {
+		if net.ParseIP(hostIP).IsLoopback() {
+			loopback++
+		}
+	}
+	return loopback == len(hostIPs)
+}
+
+func (endpoints Endpoints) atleastOneEndpointLocal() bool {
+	for _, endpoint := range endpoints {
+		if endpoint.IsLocal {
+			return true
+		}
+	}
+	return false
+}
+
 // UpdateIsLocal - resolves the host and discovers the local host.
-func (endpoints Endpoints) UpdateIsLocal() error {
+func (endpoints Endpoints) UpdateIsLocal(foundPrevLocal bool) error {
+	orchestrated := IsDocker() || IsKubernetes()
+	k8sReplicaSet := IsKubernetesReplicaSet()
+
 	var epsResolved int
 	var foundLocal bool
 	resolvedList := make([]bool, len(endpoints))
@@ -256,29 +305,88 @@ func (endpoints Endpoints) UpdateIsLocal() error {
 					continue
 				}
 
-				// return err if not Docker or Kubernetes
-				// We use IsDocker() to check for Docker environment
-				// We use IsKubernetes() to check for Kubernetes environment
-				isLocal, err := isLocalHost(endpoints[i].Hostname(), endpoints[i].Port(), globalMinioPort)
-				if err != nil {
-					if !IsDocker() && !IsKubernetes() {
-						return err
-					}
+				// Log the message to console about the host resolving
+				reqInfo := (&logger.ReqInfo{}).AppendTags(
+					"host",
+					endpoints[i].Hostname(),
+				)
+
+				if k8sReplicaSet && hostResolveToLocalhost(endpoints[i]) {
+					err := fmt.Errorf("host %s resolves to 127.*, DNS incorrectly configured retrying",
+						endpoints[i])
 					// time elapsed
 					timeElapsed := time.Since(startTime)
 					// log error only if more than 1s elapsed
 					if timeElapsed > time.Second {
-						// Log the message to console about the host not being resolveable.
-						reqInfo := (&logger.ReqInfo{}).AppendTags("host", endpoints[i].Hostname())
 						reqInfo.AppendTags("elapsedTime",
-							humanize.RelTime(startTime, startTime.Add(timeElapsed),
-								"elapsed", ""))
+							humanize.RelTime(startTime,
+								startTime.Add(timeElapsed),
+								"elapsed",
+								""))
 						ctx := logger.SetReqInfo(context.Background(), reqInfo)
+						logger.LogIf(ctx, err, logger.Application)
+					}
+					continue
+				}
+
+				// return err if not Docker or Kubernetes
+				// We use IsDocker() to check for Docker environment
+				// We use IsKubernetes() to check for Kubernetes environment
+				isLocal, err := isLocalHost(endpoints[i].Hostname(),
+					endpoints[i].Port(),
+					globalMinioPort,
+				)
+				if err != nil && !orchestrated {
+					return err
+				}
+				if err != nil {
+					// time elapsed
+					timeElapsed := time.Since(startTime)
+					// log error only if more than 1s elapsed
+					if timeElapsed > time.Second {
+						reqInfo.AppendTags("elapsedTime",
+							humanize.RelTime(startTime,
+								startTime.Add(timeElapsed),
+								"elapsed",
+								"",
+							))
+						ctx := logger.SetReqInfo(context.Background(),
+							reqInfo)
 						logger.LogIf(ctx, err, logger.Application)
 					}
 				} else {
 					resolvedList[i] = true
 					endpoints[i].IsLocal = isLocal
+					if k8sReplicaSet && !endpoints.atleastOneEndpointLocal() && !foundPrevLocal {
+						// In replicated set in k8s deployment, IPs might
+						// get resolved for older IPs, add this code
+						// to ensure that we wait for this server to
+						// participate atleast one disk and be local.
+						//
+						// In special cases for replica set with expanded
+						// zone setups we need to make sure to provide
+						// value of foundPrevLocal from zone1 if we already
+						// found a local setup. Only if we haven't found
+						// previous local we continue to wait to look for
+						// atleast one local.
+						resolvedList[i] = false
+						// time elapsed
+						err := fmt.Errorf("no endpoint is local to this host: %s", endpoints[i])
+						timeElapsed := time.Since(startTime)
+						// log error only if more than 1s elapsed
+						if timeElapsed > time.Second {
+							reqInfo.AppendTags("elapsedTime",
+								humanize.RelTime(startTime,
+									startTime.Add(timeElapsed),
+									"elapsed",
+									"",
+								))
+							ctx := logger.SetReqInfo(context.Background(),
+								reqInfo)
+							logger.LogIf(ctx, err, logger.Application)
+						}
+						continue
+					}
 					epsResolved++
 					if !foundLocal {
 						foundLocal = isLocal
@@ -288,7 +396,7 @@ func (endpoints Endpoints) UpdateIsLocal() error {
 
 			// Wait for the tick, if the there exist a local endpoint in discovery.
 			// Non docker/kubernetes environment we do not need to wait.
-			if !foundLocal && (IsDocker() || IsKubernetes()) {
+			if !foundLocal && orchestrated {
 				<-keepAliveTicker.C
 			}
 		}
@@ -350,28 +458,6 @@ func NewEndpoints(args ...string) (endpoints Endpoints, err error) {
 	return endpoints, nil
 }
 
-func checkEndpointsSubOptimal(ctx *cli.Context, setupType SetupType, endpointZones EndpointZones) (err error) {
-	// Validate sub optimal ordering only for distributed setup.
-	if setupType != DistXLSetupType {
-		return nil
-	}
-	var endpointOrder int
-	err = fmt.Errorf("Too many disk args are local, input is in sub-optimal order. Please review input args: %s", ctx.Args())
-	for _, endpoints := range endpointZones {
-		for _, endpoint := range endpoints.Endpoints {
-			if endpoint.IsLocal {
-				endpointOrder++
-			} else {
-				endpointOrder--
-			}
-			if endpointOrder >= 2 {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
 // Checks if there are any cross device mounts.
 func checkCrossDeviceMounts(endpoints Endpoints) (err error) {
 	var absPaths []string
@@ -389,7 +475,7 @@ func checkCrossDeviceMounts(endpoints Endpoints) (err error) {
 }
 
 // CreateEndpoints - validates and creates new endpoints for given args.
-func CreateEndpoints(serverAddr string, args ...[]string) (Endpoints, SetupType, error) {
+func CreateEndpoints(serverAddr string, foundLocal bool, args ...[]string) (Endpoints, SetupType, error) {
 	var endpoints Endpoints
 	var setupType SetupType
 	var err error
@@ -425,9 +511,8 @@ func CreateEndpoints(serverAddr string, args ...[]string) (Endpoints, SetupType,
 		return endpoints, setupType, nil
 	}
 
-	for i, iargs := range args {
+	for _, iargs := range args {
 		// Convert args to endpoints
-		var newEndpoints Endpoints
 		eps, err := NewEndpoints(iargs...)
 		if err != nil {
 			return endpoints, setupType, config.ErrInvalidErasureEndpoints(nil).Msg(err.Error())
@@ -438,11 +523,7 @@ func CreateEndpoints(serverAddr string, args ...[]string) (Endpoints, SetupType,
 			return endpoints, setupType, config.ErrInvalidErasureEndpoints(nil).Msg(err.Error())
 		}
 
-		for _, ep := range eps {
-			ep.SetIndex = i
-			newEndpoints = append(newEndpoints, ep)
-		}
-		endpoints = append(endpoints, newEndpoints...)
+		endpoints = append(endpoints, eps...)
 	}
 
 	if len(endpoints) == 0 {
@@ -455,7 +536,7 @@ func CreateEndpoints(serverAddr string, args ...[]string) (Endpoints, SetupType,
 		return endpoints, setupType, nil
 	}
 
-	if err = endpoints.UpdateIsLocal(); err != nil {
+	if err = endpoints.UpdateIsLocal(foundLocal); err != nil {
 		return endpoints, setupType, config.ErrInvalidErasureEndpoints(nil).Msg(err.Error())
 	}
 
@@ -516,13 +597,14 @@ func CreateEndpoints(serverAddr string, args ...[]string) (Endpoints, SetupType,
 
 	// All endpoints are pointing to local host
 	if len(endpoints) == localEndpointCount {
-		// If all endpoints have same port number, then this is XL setup using URL style endpoints.
+		// If all endpoints have same port number, Just treat it as distXL setup
+		// using URL style endpoints.
 		if len(localPortSet) == 1 {
 			if len(localServerHostSet) > 1 {
 				return endpoints, setupType,
 					config.ErrInvalidErasureEndpoints(nil).Msg("all local endpoints should not have different hostnames/ips")
 			}
-			return endpoints, XLSetupType, nil
+			return endpoints, DistXLSetupType, nil
 		}
 
 		// Even though all endpoints are local, but those endpoints use different ports.
@@ -623,22 +705,28 @@ func updateDomainIPs(endPoints set.StringSet) {
 				continue
 			}
 		}
-		IPs, err := getHostIP(host)
-		if err != nil {
-			continue
+
+		if net.ParseIP(host) == nil {
+			IPs, err := getHostIP(host)
+			if err != nil {
+				continue
+			}
+
+			IPsWithPort := IPs.ApplyFunc(func(ip string) string {
+				return net.JoinHostPort(ip, port)
+			})
+
+			ipList = ipList.Union(IPsWithPort)
 		}
 
-		IPsWithPort := IPs.ApplyFunc(func(ip string) string {
-			return net.JoinHostPort(ip, port)
-		})
-
-		ipList = ipList.Union(IPsWithPort)
+		ipList.Add(net.JoinHostPort(host, port))
 	}
+
 	globalDomainIPs = ipList.FuncMatch(func(ip string, matchString string) bool {
 		host, _, err := net.SplitHostPort(ip)
 		if err != nil {
 			host = ip
 		}
-		return !net.ParseIP(host).IsLoopback()
+		return !net.ParseIP(host).IsLoopback() && host != "localhost"
 	}, "")
 }

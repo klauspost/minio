@@ -26,16 +26,16 @@ matrix:
         - ARCH=x86_64
         - CGO_ENABLED=0
         - GO111MODULE=on
+        - SIMPLE_CI=1
       go: 1.13.x
       script:
         - make
         - diff -au <(gofmt -s -d cmd) <(printf "")
         - diff -au <(gofmt -s -d pkg) <(printf "")
-        - for d in $(go list ./... | grep -v browser); do CGO_ENABLED=1 go test -v -race --timeout 20m "$d"; done
-        - make verifiers
+        - make test-race
         - make crosscompile
         - make verify
-        - cd browser && yarn && yarn test && cd ..
+        - cd browser && npm install && npm run test && cd ..
         - bash -c 'shopt -s globstar; shellcheck mint/**/*.sh'
 
     - os: windows
@@ -43,6 +43,7 @@ matrix:
         - ARCH=x86_64
         - CGO_ENABLED=0
         - GO111MODULE=on
+        - SIMPLE_CI=1
       go: 1.13.x
       script:
         - go build --ldflags="$(go run buildscripts/gen-ldflags.go)" -o %GOPATH%\bin\minio.exe
@@ -54,4 +55,4 @@ before_script:
   - if [[ "${TRAVIS_OS_NAME}" == "linux" ]]; then sudo sh -c 'echo 0 > /proc/sys/net/ipv6/conf/all/disable_ipv6'; fi
 
 before_install:
- - if [[ "$TRAVIS_OS_NAME" == "linux" ]]; then nvm install 11.10.1 ; fi
+ - if [[ "$TRAVIS_OS_NAME" == "linux" ]]; then nvm install stable ; fi

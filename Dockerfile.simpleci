@@ -8,6 +8,7 @@ WORKDIR /go/src/github.com/minio/minio
 
 RUN apt-get update && apt-get install -y jq
 ENV GO111MODULE=on
+ENV SIMPLE_CI 1
 
 RUN git config --global http.cookiefile /gitcookie/.gitcookie
 
@@ -33,15 +34,19 @@ USER ci
 RUN make
 RUN bash -c 'diff -au <(gofmt -s -d cmd) <(printf "")'
 RUN bash -c 'diff -au <(gofmt -s -d pkg) <(printf "")'
-RUN for d in $(go list ./... | grep -v browser); do go test -v -race --timeout 20m "$d"; done
-RUN make verifiers
+RUN make test-race
 RUN make crosscompile
 RUN make verify
+
+## -- add healing tests
+RUN make verify-healing
 
 #-------------------------------------------------------------
 # Stage 2: Test Frontend
 #-------------------------------------------------------------
 FROM node:10.15-stretch-slim
+
+ENV SIMPLE_CI 1
 
 COPY browser /minio/browser
 WORKDIR /minio/browser
@@ -63,6 +68,7 @@ ENV LANG C.UTF-8
 ENV GOROOT /usr/local/go
 ENV GOPATH /usr/local
 ENV PATH $GOPATH/bin:$GOROOT/bin:$PATH
+ENV SIMPLE_CI 1
 ENV MINT_ROOT_DIR /mint
 
 RUN apt-get --yes update && apt-get --yes upgrade && \
