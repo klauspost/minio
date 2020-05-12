@@ -90,7 +90,7 @@ func TestParseBucketSSEConfig(t *testing.T) {
 		// 3. Invalid - more than one rule
 		{
 			inputXML:    `<ServerSideEncryptionConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Rule><ApplyServerSideEncryptionByDefault><SSEAlgorithm>AES256</SSEAlgorithm></ApplyServerSideEncryptionByDefault></Rule><Rule><ApplyServerSideEncryptionByDefault><SSEAlgorithm>AES256</SSEAlgorithm></ApplyServerSideEncryptionByDefault></Rule></ServerSideEncryptionConfiguration>`,
-			expectedErr: errors.New("Only one server-side encryption rule is allowed"),
+			expectedErr: errors.New("only one server-side encryption rule is allowed at a time"),
 			shouldPass:  false,
 		},
 		// 4. Invalid XML - master key ID present along with AES256

@@ -18,6 +18,8 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 
@@ -87,13 +89,17 @@ func (api objectAPIHandlers) PutBucketPolicyHandler(w http.ResponseWriter, r *ht
 		return
 	}
 
-	if err = objAPI.SetBucketPolicy(ctx, bucket, bucketPolicy); err != nil {
+	configData, err := json.Marshal(bucketPolicy)
+	if err != nil {
 		writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL, guessIsBrowserReq(r))
 		return
 	}
 
-	globalPolicySys.Set(bucket, bucketPolicy)
-	globalNotificationSys.SetBucketPolicy(ctx, bucket, bucketPolicy)
+	if err = globalBucketMetadataSys.Update(bucket, bucketPolicyConfig, configData); err != nil {
+		fmt.Println(err)
+		writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL, guessIsBrowserReq(r))
+		return
+	}
 
 	// Success.
 	writeSuccessNoContent(w)
@@ -125,13 +131,10 @@ func (api objectAPIHandlers) DeleteBucketPolicyHandler(w http.ResponseWriter, r 
 		return
 	}
 
-	if err := objAPI.DeleteBucketPolicy(ctx, bucket); err != nil {
+	if err := globalBucketMetadataSys.Update(bucket, bucketPolicyConfig, nil); err != nil {
 		writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL, guessIsBrowserReq(r))
 		return
 	}
-
-	globalPolicySys.Remove(bucket)
-	globalNotificationSys.RemoveBucketPolicy(ctx, bucket)
 
 	// Success.
 	writeSuccessNoContent(w)
@@ -164,18 +167,15 @@ func (api objectAPIHandlers) GetBucketPolicyHandler(w http.ResponseWriter, r *ht
 	}
 
 	// Read bucket access policy.
-	bucketPolicy, err := objAPI.GetBucketPolicy(ctx, bucket)
+	configData, err := globalBucketMetadataSys.Get(bucket, bucketPolicyConfig)
 	if err != nil {
-		writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL, guessIsBrowserReq(r))
-		return
-	}
-
-	policyData, err := json.Marshal(bucketPolicy)
-	if err != nil {
+		if errors.Is(err, errConfigNotFound) {
+			err = BucketPolicyNotFound{Bucket: bucket}
+		}
 		writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL, guessIsBrowserReq(r))
 		return
 	}
 
 	// Write to client.
-	w.Write(policyData)
+	writeSuccessResponseJSON(w, configData)
 }
