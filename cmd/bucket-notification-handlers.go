@@ -74,7 +74,7 @@ func (api objectAPIHandlers) GetBucketNotificationHandler(w http.ResponseWriter,
 	}
 	config.SetRegion(globalServerRegion)
 
-	configData, err := globalBucketMetadataSys.Get(bucketName, bucketNotificationConfig)
+	configData, err := globalBucketMetadataSys.GetConfig(bucketName, bucketNotificationConfig)
 	if err != nil {
 		if err != errConfigNotFound {
 			writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL, guessIsBrowserReq(r))

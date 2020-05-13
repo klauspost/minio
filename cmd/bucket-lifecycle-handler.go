@@ -114,7 +114,7 @@ func (api objectAPIHandlers) GetBucketLifecycleHandler(w http.ResponseWriter, r 
 		return
 	}
 
-	configData, err := globalBucketMetadataSys.Get(bucket, bucketLifecycleConfig)
+	configData, err := globalBucketMetadataSys.GetConfig(bucket, bucketLifecycleConfig)
 	if err != nil {
 		if errors.Is(err, errConfigNotFound) {
 			err = BucketLifecycleNotFound{Bucket: bucket}

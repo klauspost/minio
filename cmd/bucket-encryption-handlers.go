@@ -128,7 +128,7 @@ func (api objectAPIHandlers) GetBucketEncryptionHandler(w http.ResponseWriter, r
 		return
 	}
 
-	configData, err := globalBucketMetadataSys.Get(bucket, bucketSSEConfig)
+	configData, err := globalBucketMetadataSys.GetConfig(bucket, bucketSSEConfig)
 	if err != nil {
 		if errors.Is(err, errConfigNotFound) {
 			err = BucketSSEConfigNotFound{Bucket: bucket}

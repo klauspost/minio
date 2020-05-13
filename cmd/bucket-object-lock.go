@@ -47,7 +47,7 @@ func (sys *BucketObjectLockSys) Get(bucketName string) (r *objectlock.Retention,
 
 	r, ok := sys.retentionMap[bucketName]
 	if !ok {
-		configData, err := globalBucketMetadataSys.Get(bucketName, objectLockConfig)
+		configData, err := globalBucketMetadataSys.GetConfig(bucketName, objectLockConfig)
 		if err != nil {
 			if errors.Is(err, errConfigNotFound) {
 				return &objectlock.Retention{}, nil
@@ -442,7 +442,7 @@ func (sys *BucketObjectLockSys) Init(buckets []BucketInfo, objAPI ObjectLayer) e
 func (sys *BucketObjectLockSys) load(buckets []BucketInfo, objAPI ObjectLayer) error {
 	for _, bucket := range buckets {
 		ctx := logger.SetReqInfo(GlobalContext, &logger.ReqInfo{BucketName: bucket.Name})
-		configData, err := globalBucketMetadataSys.Get(bucket.Name, bucketLifecycleConfig)
+		configData, err := globalBucketMetadataSys.GetConfig(bucket.Name, bucketLifecycleConfig)
 		if err != nil {
 			if errors.Is(err, errConfigNotFound) {
 				continue

@@ -47,7 +47,7 @@ func (sys *LifecycleSys) Get(bucketName string) (lc *lifecycle.Lifecycle, err er
 
 	lc, ok := sys.bucketLifecycleMap[bucketName]
 	if !ok {
-		configData, err := globalBucketMetadataSys.Get(bucketName, bucketLifecycleConfig)
+		configData, err := globalBucketMetadataSys.GetConfig(bucketName, bucketLifecycleConfig)
 		if err != nil {
 			if errors.Is(err, errConfigNotFound) {
 				return nil, BucketLifecycleNotFound{Bucket: bucketName}
@@ -85,7 +85,7 @@ func (sys *LifecycleSys) Init(buckets []BucketInfo, objAPI ObjectLayer) error {
 // Loads lifecycle policies for all buckets into LifecycleSys.
 func (sys *LifecycleSys) load(buckets []BucketInfo, objAPI ObjectLayer) error {
 	for _, bucket := range buckets {
-		configData, err := globalBucketMetadataSys.Get(bucket.Name, bucketLifecycleConfig)
+		configData, err := globalBucketMetadataSys.GetConfig(bucket.Name, bucketLifecycleConfig)
 		if err != nil {
 			if errors.Is(err, errConfigNotFound) {
 				continue

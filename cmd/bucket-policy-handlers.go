@@ -167,7 +167,7 @@ func (api objectAPIHandlers) GetBucketPolicyHandler(w http.ResponseWriter, r *ht
 	}
 
 	// Read bucket access policy.
-	configData, err := globalBucketMetadataSys.Get(bucket, bucketPolicyConfig)
+	configData, err := globalBucketMetadataSys.GetConfig(bucket, bucketPolicyConfig)
 	if err != nil {
 		if errors.Is(err, errConfigNotFound) {
 			err = BucketPolicyNotFound{Bucket: bucket}

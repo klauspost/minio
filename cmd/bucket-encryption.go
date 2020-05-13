@@ -39,7 +39,7 @@ func NewBucketSSEConfigSys() *BucketSSEConfigSys {
 // load - Loads the bucket encryption configuration for the given list of buckets
 func (sys *BucketSSEConfigSys) load(buckets []BucketInfo, objAPI ObjectLayer) error {
 	for _, bucket := range buckets {
-		configData, err := globalBucketMetadataSys.Get(bucket.Name, bucketSSEConfig)
+		configData, err := globalBucketMetadataSys.GetConfig(bucket.Name, bucketSSEConfig)
 		if err != nil {
 			if errors.Is(err, errConfigNotFound) {
 				continue
@@ -86,7 +86,7 @@ func (sys *BucketSSEConfigSys) Get(bucket string) (config *bucketsse.BucketSSECo
 
 	config, ok := sys.bucketSSEConfigMap[bucket]
 	if !ok {
-		configData, err := globalBucketMetadataSys.Get(bucket, bucketSSEConfig)
+		configData, err := globalBucketMetadataSys.GetConfig(bucket, bucketSSEConfig)
 		if err != nil {
 			if errors.Is(err, errConfigNotFound) {
 				return nil, BucketSSEConfigNotFound{Bucket: bucket}

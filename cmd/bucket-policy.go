@@ -48,7 +48,7 @@ func (sys *PolicySys) Get(bucket string) (*policy.Policy, error) {
 		}
 		return objAPI.GetBucketPolicy(GlobalContext, bucket)
 	}
-	configData, err := globalBucketMetadataSys.Get(bucket, bucketPolicyConfig)
+	configData, err := globalBucketMetadataSys.GetConfig(bucket, bucketPolicyConfig)
 	if err != nil {
 		if !errors.Is(err, errConfigNotFound) {
 			return nil, err
@@ -73,7 +73,7 @@ func (sys *PolicySys) IsAllowed(args policy.Args) bool {
 		// If policy is available for given bucket, check the policy.
 		p, found := sys.bucketPolicyMap[args.BucketName]
 		if !found {
-			configData, err := globalBucketMetadataSys.Get(args.BucketName, bucketPolicyConfig)
+			configData, err := globalBucketMetadataSys.GetConfig(args.BucketName, bucketPolicyConfig)
 			if err != nil {
 				if !errors.Is(err, errConfigNotFound) {
 					logger.LogIf(GlobalContext, err)
@@ -99,7 +99,7 @@ func (sys *PolicySys) IsAllowed(args policy.Args) bool {
 // Loads policies for all buckets into PolicySys.
 func (sys *PolicySys) load(buckets []BucketInfo, objAPI ObjectLayer) error {
 	for _, bucket := range buckets {
-		configData, err := globalBucketMetadataSys.Get(bucket.Name, bucketPolicyConfig)
+		configData, err := globalBucketMetadataSys.GetConfig(bucket.Name, bucketPolicyConfig)
 		if err != nil {
 			if errors.Is(err, errConfigNotFound) {
 				continue

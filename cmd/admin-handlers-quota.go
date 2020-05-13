@@ -101,7 +101,7 @@ func (a adminAPIHandlers) GetBucketQuotaConfigHandler(w http.ResponseWriter, r *
 		return
 	}
 
-	configData, err := globalBucketMetadataSys.Get(bucket, bucketQuotaConfigFile)
+	configData, err := globalBucketMetadataSys.GetConfig(bucket, bucketQuotaConfigFile)
 	if err != nil {
 		if errors.Is(err, errConfigNotFound) {
 			writeErrorResponseJSON(ctx, w, toAdminAPIErr(ctx, BucketQuotaConfigNotFound{Bucket: bucket}), r.URL)

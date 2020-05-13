@@ -57,8 +57,8 @@ type BucketMetadata struct {
 }
 
 // newBucketMetadata creates BucketMetadata with the supplied name and Created to Now.
-func newBucketMetadata(name string) *BucketMetadata {
-	return &BucketMetadata{
+func newBucketMetadata(name string) BucketMetadata {
+	return BucketMetadata{
 		Name:    name,
 		Created: UTCNow(),
 	}
@@ -93,7 +93,7 @@ func (b *BucketMetadata) Load(ctx context.Context, api ObjectLayer, name string)
 }
 
 // loadBucketMetadata loads and migrates to bucket metadata.
-func loadBucketMetadata(ctx context.Context, objectAPI ObjectLayer, bucket string) (*BucketMetadata, error) {
+func loadBucketMetadata(ctx context.Context, objectAPI ObjectLayer, bucket string) (BucketMetadata, error) {
 	b := newBucketMetadata(bucket)
 	err := b.Load(ctx, objectAPI, bucket)
 	if err == nil {

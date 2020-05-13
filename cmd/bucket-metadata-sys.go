@@ -12,7 +12,10 @@ import (
 // BucketMetadataSys captures all bucket metadata for a given cluster.
 type BucketMetadataSys struct {
 	sync.RWMutex
-	metadataMap map[string]*BucketMetadata
+	metadataMap map[string]BucketMetadata
+
+	// Do fallback to old config when unable to find a bucket config
+	fallback bool
 }
 
 // Remove bucket metadata from memory.
@@ -26,7 +29,11 @@ func (sys *BucketMetadataSys) Remove(bucket string) {
 }
 
 // Set - sets a new metadata in-memory.
-func (sys *BucketMetadataSys) Set(bucket string, meta *BucketMetadata) {
+// Only a shallow copy is saved and fields with references
+// cannot be modified without causing a race condition,
+// so they should be replaced atomically and not appended to, etc.
+// Data is not persisted to disk.
+func (sys *BucketMetadataSys) Set(bucket string, meta BucketMetadata) {
 	if globalIsGateway {
 		return
 	}
@@ -36,6 +43,7 @@ func (sys *BucketMetadataSys) Set(bucket string, meta *BucketMetadata) {
 }
 
 // Update update bucket metadata for the specified config file.
+// The configData data should not be modified after being sent here.
 func (sys *BucketMetadataSys) Update(bucket string, configFile string, configData []byte) error {
 	objAPI := newObjectLayerWithoutSafeModeFn()
 	if objAPI == nil {
@@ -88,8 +96,28 @@ func (sys *BucketMetadataSys) Update(bucket string, configFile string, configDat
 	return nil
 }
 
-// Get returns current bucket metadata
-func (sys *BucketMetadataSys) Get(bucket string, configFile string) ([]byte, error) {
+// Get metadata for a bucket.
+// If no metadata exists errConfigNotFound is returned and a new metadata is returned.
+// Only a shallow copy is returned, so referenced data should not be modified,
+// but can be replaced atomically.
+func (sys *BucketMetadataSys) Get(bucket string) (BucketMetadata, error) {
+	if globalIsGateway {
+		return newBucketMetadata(bucket), NotImplemented{}
+	}
+
+	sys.RLock()
+	defer sys.RUnlock()
+
+	meta, ok := sys.metadataMap[bucket]
+	if ok {
+		return newBucketMetadata(bucket), errConfigNotFound
+	}
+	return meta, nil
+}
+
+// GetConfig returns a specific configuration from the bucket metadata.
+// The returned data should be copied before being modified.
+func (sys *BucketMetadataSys) GetConfig(bucket string, configFile string) ([]byte, error) {
 	if globalIsGateway {
 		return nil, NotImplemented{}
 	}
@@ -99,6 +127,9 @@ func (sys *BucketMetadataSys) Get(bucket string, configFile string) ([]byte, err
 
 	meta, ok := sys.metadataMap[bucket]
 	if !ok {
+		if !sys.fallback {
+			return nil, errConfigNotFound
+		}
 		objAPI := newObjectLayerWithoutSafeModeFn()
 		if objAPI == nil {
 			return nil, errServerNotInitialized
@@ -138,7 +169,7 @@ func (sys *BucketMetadataSys) Get(bucket string, configFile string) ([]byte, err
 	return configData, nil
 }
 
-// Init - initializes policy system from policy.json of all buckets.
+// Init - initializes bucket metadata system for all buckets.
 func (sys *BucketMetadataSys) Init(ctx context.Context, buckets []BucketInfo, objAPI ObjectLayer) error {
 	if objAPI == nil {
 		return errServerNotInitialized
@@ -154,8 +185,12 @@ func (sys *BucketMetadataSys) Init(ctx context.Context, buckets []BucketInfo, ob
 	return sys.load(ctx, buckets, objAPI)
 }
 
-// Loads bucket metadata for all buckets into BucketMetadataSys
+// Loads bucket metadata for all buckets into BucketMetadataSys.
+// When if done successfully fallback will be disabled.
 func (sys *BucketMetadataSys) load(ctx context.Context, buckets []BucketInfo, objAPI ObjectLayer) error {
+	sys.Lock()
+	defer sys.Unlock()
+
 	for _, bucket := range buckets {
 		meta, err := loadBucketMetadata(ctx, objAPI, bucket.Name)
 		if err != nil {
@@ -163,12 +198,16 @@ func (sys *BucketMetadataSys) load(ctx context.Context, buckets []BucketInfo, ob
 		}
 		sys.metadataMap[bucket.Name] = meta
 	}
+	sys.fallback = false
 	return nil
 }
 
 // NewBucketMetadataSys - creates new policy system.
 func NewBucketMetadataSys() *BucketMetadataSys {
 	return &BucketMetadataSys{
-		metadataMap: make(map[string]*BucketMetadata),
+		metadataMap: make(map[string]BucketMetadata),
+
+		// Do fallback until all buckets have been loaded.
+		fallback: true,
 	}
 }

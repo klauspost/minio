@@ -40,7 +40,7 @@ type BucketQuotaSys struct {
 func (sys *BucketQuotaSys) Get(bucketName string) (q madmin.BucketQuota, err error) {
 	q, ok := sys.quotaMap[bucketName]
 	if !ok {
-		configData, err := globalBucketMetadataSys.Get(bucketName, bucketQuotaConfigFile)
+		configData, err := globalBucketMetadataSys.GetConfig(bucketName, bucketQuotaConfigFile)
 		if err != nil {
 			if errors.Is(err, errConfigNotFound) {
 				return q, nil
@@ -79,7 +79,7 @@ func (sys *BucketQuotaSys) Init(buckets []BucketInfo, objAPI ObjectLayer) error 
 func (sys *BucketQuotaSys) load(buckets []BucketInfo, objAPI ObjectLayer) error {
 	for _, bucket := range buckets {
 		ctx := logger.SetReqInfo(GlobalContext, &logger.ReqInfo{BucketName: bucket.Name})
-		configData, err := globalBucketMetadataSys.Get(bucket.Name, bucketQuotaConfigFile)
+		configData, err := globalBucketMetadataSys.GetConfig(bucket.Name, bucketQuotaConfigFile)
 		if err != nil {
 			if errors.Is(err, errConfigNotFound) {
 				continue

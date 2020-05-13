@@ -590,7 +590,7 @@ func (sys *NotificationSys) AddRemoteTarget(bucketName string, target event.Targ
 func (sys *NotificationSys) load(buckets []BucketInfo, objAPI ObjectLayer) error {
 	for _, bucket := range buckets {
 		ctx := logger.SetReqInfo(GlobalContext, &logger.ReqInfo{BucketName: bucket.Name})
-		configData, err := globalBucketMetadataSys.Get(bucket.Name, bucketNotificationConfig)
+		configData, err := globalBucketMetadataSys.GetConfig(bucket.Name, bucketNotificationConfig)
 		if err != nil {
 			if errors.Is(err, errConfigNotFound) {
 				continue

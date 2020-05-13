@@ -1060,7 +1060,7 @@ func (api objectAPIHandlers) GetBucketObjectLockConfigHandler(w http.ResponseWri
 		return
 	}
 
-	configData, err := globalBucketMetadataSys.Get(bucket, objectLockConfig)
+	configData, err := globalBucketMetadataSys.GetConfig(bucket, objectLockConfig)
 	if err != nil {
 		if errors.Is(err, errConfigNotFound) {
 			err = BucketObjectLockConfigNotFound{Bucket: bucket}
@@ -1139,7 +1139,7 @@ func (api objectAPIHandlers) GetBucketTaggingHandler(w http.ResponseWriter, r *h
 		return
 	}
 
-	configData, err := globalBucketMetadataSys.Get(bucket, bucketTaggingConfigFile)
+	configData, err := globalBucketMetadataSys.GetConfig(bucket, bucketTaggingConfigFile)
 	if err != nil {
 		if errors.Is(err, errConfigNotFound) {
 			err = BucketTaggingNotFound{Bucket: bucket}
