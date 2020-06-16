@@ -1,5 +1,5 @@
 /*
- * Minio Cloud Storage, (C) 2017 Minio, Inc.
+ * MinIO Cloud Storage, (C) 2017 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,9 +17,53 @@
 package cmd
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/minio/cli"
 )
+
+// Test RegisterGatewayCommand
+func TestRegisterGatewayCommand(t *testing.T) {
+	var err error
+
+	cmd := cli.Command{Name: "test"}
+	err = RegisterGatewayCommand(cmd)
+	if err != nil {
+		t.Errorf("RegisterGatewayCommand got unexpected error: %s", err)
+	}
+}
+
+// Test running a registered gateway command with a flag
+func TestRunRegisteredGatewayCommand(t *testing.T) {
+	var err error
+
+	flagName := "test-flag"
+	flagValue := "foo"
+
+	cmd := cli.Command{
+		Name: "test-run-with-flag",
+		Flags: []cli.Flag{
+			cli.StringFlag{Name: flagName},
+		},
+		Action: func(ctx *cli.Context) {
+			if actual := ctx.String(flagName); actual != flagValue {
+				t.Errorf("value of %s expects %s, but got %s", flagName, flagValue, actual)
+			}
+		},
+	}
+
+	err = RegisterGatewayCommand(cmd)
+	if err != nil {
+		t.Errorf("RegisterGatewayCommand got unexpected error: %s", err)
+	}
+
+	if err = newApp("minio").Run(
+		[]string{"minio", "gateway", cmd.Name, fmt.Sprintf("--%s", flagName), flagValue}); err != nil {
+		t.Errorf("running registered gateway command got unexpected error: %s", err)
+	}
+}
 
 // Test parseGatewayEndpoint
 func TestParseGatewayEndpoint(t *testing.T) {
@@ -31,15 +75,15 @@ func TestParseGatewayEndpoint(t *testing.T) {
 	}{
 		{"http://127.0.0.1:9000", "127.0.0.1:9000", false, false},
 		{"https://127.0.0.1:9000", "127.0.0.1:9000", true, false},
-		{"http://play.minio.io:9000", "play.minio.io:9000", false, false},
-		{"https://play.minio.io:9000", "play.minio.io:9000", true, false},
+		{"http://play.min.io:9000", "play.min.io:9000", false, false},
+		{"https://play.min.io:9000", "play.min.io:9000", true, false},
 		{"ftp://127.0.0.1:9000", "", false, true},
-		{"ftp://play.minio.io:9000", "", false, true},
-		{"play.minio.io:9000", "play.minio.io:9000", true, false},
+		{"ftp://play.min.io:9000", "", false, true},
+		{"play.min.io:9000", "play.min.io:9000", true, false},
 	}
 
 	for i, test := range testCases {
-		endPoint, secure, err := parseGatewayEndpoint(test.arg)
+		endPoint, secure, err := ParseGatewayEndpoint(test.arg)
 		errReturned := err != nil
 
 		if endPoint != test.endPoint ||
@@ -74,7 +118,7 @@ func TestValidateGatewayArguments(t *testing.T) {
 		{":9000", nonLoopBackIP + ":9000", false},
 	}
 	for i, test := range testCases {
-		err := validateGatewayArguments(test.serverAddr, test.endpointAddr)
+		err := ValidateGatewayArguments(test.serverAddr, test.endpointAddr)
 		if test.valid && err != nil {
 			t.Errorf("Test %d expected not to return error but got %s", i+1, err)
 		}

@@ -1,5 +1,5 @@
 /*
- * Minio Cloud Storage, (C) 2016 Minio, Inc.
+ * MinIO Cloud Storage, (C) 2016, 2017, 2018 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,10 +17,20 @@
 package cmd
 
 import (
-	"net"
+	"context"
+	"fmt"
 	"net/http"
-	"strings"
+	"regexp"
 	"time"
+
+	"github.com/minio/minio/cmd/crypto"
+	xhttp "github.com/minio/minio/cmd/http"
+	"github.com/minio/minio/pkg/event"
+	"github.com/minio/minio/pkg/handlers"
+)
+
+var (
+	etagRegex = regexp.MustCompile("\"*?([^\"]*?)\"*?$")
 )
 
 // Validates the preconditions for CopyObjectPart, returns true if CopyObjectPart
@@ -29,8 +39,8 @@ import (
 //  x-amz-copy-source-if-unmodified-since
 //  x-amz-copy-source-if-match
 //  x-amz-copy-source-if-none-match
-func checkCopyObjectPartPreconditions(w http.ResponseWriter, r *http.Request, objInfo ObjectInfo) bool {
-	return checkCopyObjectPreconditions(w, r, objInfo)
+func checkCopyObjectPartPreconditions(ctx context.Context, w http.ResponseWriter, r *http.Request, objInfo ObjectInfo, encETag string) bool {
+	return checkCopyObjectPreconditions(ctx, w, r, objInfo, encETag)
 }
 
 // Validates the preconditions for CopyObject, returns true if CopyObject operation should not proceed.
@@ -39,10 +49,13 @@ func checkCopyObjectPartPreconditions(w http.ResponseWriter, r *http.Request, ob
 //  x-amz-copy-source-if-unmodified-since
 //  x-amz-copy-source-if-match
 //  x-amz-copy-source-if-none-match
-func checkCopyObjectPreconditions(w http.ResponseWriter, r *http.Request, objInfo ObjectInfo) bool {
+func checkCopyObjectPreconditions(ctx context.Context, w http.ResponseWriter, r *http.Request, objInfo ObjectInfo, encETag string) bool {
 	// Return false for methods other than GET and HEAD.
-	if r.Method != "PUT" {
+	if r.Method != http.MethodPut {
 		return false
+	}
+	if encETag == "" {
+		encETag = objInfo.ETag
 	}
 	// If the object doesn't have a modtime (IsZero), or the modtime
 	// is obviously garbage (Unix time == 0), then ignore modtimes
@@ -57,21 +70,21 @@ func checkCopyObjectPreconditions(w http.ResponseWriter, r *http.Request, objInf
 		setCommonHeaders(w)
 
 		// set object-related metadata headers
-		w.Header().Set("Last-Modified", objInfo.ModTime.UTC().Format(http.TimeFormat))
+		w.Header().Set(xhttp.LastModified, objInfo.ModTime.UTC().Format(http.TimeFormat))
 
 		if objInfo.ETag != "" {
-			w.Header().Set("ETag", "\""+objInfo.ETag+"\"")
+			w.Header()[xhttp.ETag] = []string{"\"" + objInfo.ETag + "\""}
 		}
 	}
 	// x-amz-copy-source-if-modified-since: Return the object only if it has been modified
 	// since the specified time otherwise return 412 (precondition failed).
-	ifModifiedSinceHeader := r.Header.Get("x-amz-copy-source-if-modified-since")
+	ifModifiedSinceHeader := r.Header.Get(xhttp.AmzCopySourceIfModifiedSince)
 	if ifModifiedSinceHeader != "" {
 		if givenTime, err := time.Parse(http.TimeFormat, ifModifiedSinceHeader); err == nil {
 			if !ifModifiedSince(objInfo.ModTime, givenTime) {
 				// If the object is not modified since the specified time.
 				writeHeaders()
-				writeErrorResponse(w, ErrPreconditionFailed, r.URL)
+				writeErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrPreconditionFailed), r.URL, guessIsBrowserReq(r))
 				return true
 			}
 		}
@@ -79,38 +92,48 @@ func checkCopyObjectPreconditions(w http.ResponseWriter, r *http.Request, objInf
 
 	// x-amz-copy-source-if-unmodified-since : Return the object only if it has not been
 	// modified since the specified time, otherwise return a 412 (precondition failed).
-	ifUnmodifiedSinceHeader := r.Header.Get("x-amz-copy-source-if-unmodified-since")
+	ifUnmodifiedSinceHeader := r.Header.Get(xhttp.AmzCopySourceIfUnmodifiedSince)
 	if ifUnmodifiedSinceHeader != "" {
 		if givenTime, err := time.Parse(http.TimeFormat, ifUnmodifiedSinceHeader); err == nil {
 			if ifModifiedSince(objInfo.ModTime, givenTime) {
 				// If the object is modified since the specified time.
 				writeHeaders()
-				writeErrorResponse(w, ErrPreconditionFailed, r.URL)
+				writeErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrPreconditionFailed), r.URL, guessIsBrowserReq(r))
 				return true
 			}
 		}
 	}
 
+	shouldDecryptEtag := crypto.SSECopy.IsRequested(r.Header) && !crypto.IsMultiPart(objInfo.UserDefined)
+
 	// x-amz-copy-source-if-match : Return the object only if its entity tag (ETag) is the
 	// same as the one specified; otherwise return a 412 (precondition failed).
-	ifMatchETagHeader := r.Header.Get("x-amz-copy-source-if-match")
+	ifMatchETagHeader := r.Header.Get(xhttp.AmzCopySourceIfMatch)
 	if ifMatchETagHeader != "" {
-		if objInfo.ETag != "" && !isETagEqual(objInfo.ETag, ifMatchETagHeader) {
+		etag := objInfo.ETag
+		if shouldDecryptEtag {
+			etag = encETag[len(encETag)-32:]
+		}
+		if objInfo.ETag != "" && !isETagEqual(etag, ifMatchETagHeader) {
 			// If the object ETag does not match with the specified ETag.
 			writeHeaders()
-			writeErrorResponse(w, ErrPreconditionFailed, r.URL)
+			writeErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrPreconditionFailed), r.URL, guessIsBrowserReq(r))
 			return true
 		}
 	}
 
 	// If-None-Match : Return the object only if its entity tag (ETag) is different from the
 	// one specified otherwise, return a 304 (not modified).
-	ifNoneMatchETagHeader := r.Header.Get("x-amz-copy-source-if-none-match")
+	ifNoneMatchETagHeader := r.Header.Get(xhttp.AmzCopySourceIfNoneMatch)
 	if ifNoneMatchETagHeader != "" {
-		if objInfo.ETag != "" && isETagEqual(objInfo.ETag, ifNoneMatchETagHeader) {
+		etag := objInfo.ETag
+		if shouldDecryptEtag {
+			etag = encETag[len(encETag)-32:]
+		}
+		if objInfo.ETag != "" && isETagEqual(etag, ifNoneMatchETagHeader) {
 			// If the object ETag matches with the specified ETag.
 			writeHeaders()
-			writeErrorResponse(w, ErrPreconditionFailed, r.URL)
+			writeErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrPreconditionFailed), r.URL, guessIsBrowserReq(r))
 			return true
 		}
 	}
@@ -124,9 +147,9 @@ func checkCopyObjectPreconditions(w http.ResponseWriter, r *http.Request, objInf
 //  If-Unmodified-Since
 //  If-Match
 //  If-None-Match
-func checkPreconditions(w http.ResponseWriter, r *http.Request, objInfo ObjectInfo) bool {
+func checkPreconditions(ctx context.Context, w http.ResponseWriter, r *http.Request, objInfo ObjectInfo, opts ObjectOptions) bool {
 	// Return false for methods other than GET and HEAD.
-	if r.Method != "GET" && r.Method != "HEAD" {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		return false
 	}
 	// If the object doesn't have a modtime (IsZero), or the modtime
@@ -142,15 +165,23 @@ func checkPreconditions(w http.ResponseWriter, r *http.Request, objInfo ObjectIn
 		setCommonHeaders(w)
 
 		// set object-related metadata headers
-		w.Header().Set("Last-Modified", objInfo.ModTime.UTC().Format(http.TimeFormat))
+		w.Header().Set(xhttp.LastModified, objInfo.ModTime.UTC().Format(http.TimeFormat))
 
 		if objInfo.ETag != "" {
-			w.Header().Set("ETag", "\""+objInfo.ETag+"\"")
+			w.Header()[xhttp.ETag] = []string{"\"" + objInfo.ETag + "\""}
 		}
 	}
+
+	// Check if the part number is correct.
+	if opts.PartNumber > 1 && opts.PartNumber > len(objInfo.Parts) {
+		writeHeaders()
+		w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+		return true
+	}
+
 	// If-Modified-Since : Return the object only if it has been modified since the specified time,
 	// otherwise return a 304 (not modified).
-	ifModifiedSinceHeader := r.Header.Get("If-Modified-Since")
+	ifModifiedSinceHeader := r.Header.Get(xhttp.IfModifiedSince)
 	if ifModifiedSinceHeader != "" {
 		if givenTime, err := time.Parse(http.TimeFormat, ifModifiedSinceHeader); err == nil {
 			if !ifModifiedSince(objInfo.ModTime, givenTime) {
@@ -164,13 +195,13 @@ func checkPreconditions(w http.ResponseWriter, r *http.Request, objInfo ObjectIn
 
 	// If-Unmodified-Since : Return the object only if it has not been modified since the specified
 	// time, otherwise return a 412 (precondition failed).
-	ifUnmodifiedSinceHeader := r.Header.Get("If-Unmodified-Since")
+	ifUnmodifiedSinceHeader := r.Header.Get(xhttp.IfUnmodifiedSince)
 	if ifUnmodifiedSinceHeader != "" {
 		if givenTime, err := time.Parse(http.TimeFormat, ifUnmodifiedSinceHeader); err == nil {
 			if ifModifiedSince(objInfo.ModTime, givenTime) {
 				// If the object is modified since the specified time.
 				writeHeaders()
-				writeErrorResponse(w, ErrPreconditionFailed, r.URL)
+				writeErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrPreconditionFailed), r.URL, guessIsBrowserReq(r))
 				return true
 			}
 		}
@@ -178,19 +209,19 @@ func checkPreconditions(w http.ResponseWriter, r *http.Request, objInfo ObjectIn
 
 	// If-Match : Return the object only if its entity tag (ETag) is the same as the one specified;
 	// otherwise return a 412 (precondition failed).
-	ifMatchETagHeader := r.Header.Get("If-Match")
+	ifMatchETagHeader := r.Header.Get(xhttp.IfMatch)
 	if ifMatchETagHeader != "" {
 		if !isETagEqual(objInfo.ETag, ifMatchETagHeader) {
 			// If the object ETag does not match with the specified ETag.
 			writeHeaders()
-			writeErrorResponse(w, ErrPreconditionFailed, r.URL)
+			writeErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrPreconditionFailed), r.URL, guessIsBrowserReq(r))
 			return true
 		}
 	}
 
 	// If-None-Match : Return the object only if its entity tag (ETag) is different from the
 	// one specified otherwise, return a 304 (not modified).
-	ifNoneMatchETagHeader := r.Header.Get("If-None-Match")
+	ifNoneMatchETagHeader := r.Header.Get(xhttp.IfNoneMatch)
 	if ifNoneMatchETagHeader != "" {
 		if isETagEqual(objInfo.ETag, ifNoneMatchETagHeader) {
 			// If the object ETag matches with the specified ETag.
@@ -207,17 +238,13 @@ func checkPreconditions(w http.ResponseWriter, r *http.Request, objInfo ObjectIn
 func ifModifiedSince(objTime time.Time, givenTime time.Time) bool {
 	// The Date-Modified header truncates sub-second precision, so
 	// use mtime < t+1s instead of mtime <= t to check for unmodified.
-	if objTime.After(givenTime.Add(1 * time.Second)) {
-		return true
-	}
-	return false
+	return objTime.After(givenTime.Add(1 * time.Second))
 }
 
 // canonicalizeETag returns ETag with leading and trailing double-quotes removed,
 // if any present
 func canonicalizeETag(etag string) string {
-	canonicalETag := strings.TrimPrefix(etag, "\"")
-	return strings.TrimSuffix(canonicalETag, "\"")
+	return etagRegex.ReplaceAllString(etag, "$1")
 }
 
 // isETagEqual return true if the canonical representations of two ETag strings
@@ -226,34 +253,42 @@ func isETagEqual(left, right string) bool {
 	return canonicalizeETag(left) == canonicalizeETag(right)
 }
 
+// setAmzExpirationHeader sets x-amz-expiration header with expiry time
+// after analyzing the current bucket lifecycle rules if any.
+func setAmzExpirationHeader(w http.ResponseWriter, bucket string, objInfo ObjectInfo) {
+	if lc, err := globalLifecycleSys.Get(bucket); err == nil {
+		ruleID, expiryTime := lc.PredictExpiryTime(objInfo.Name, objInfo.ModTime, objInfo.UserTags)
+		if !expiryTime.IsZero() {
+			w.Header()[xhttp.AmzExpiration] = []string{
+				fmt.Sprintf(`expiry-date="%s", rule-id="%s"`, expiryTime.Format(http.TimeFormat), ruleID),
+			}
+		}
+	}
+}
+
 // deleteObject is a convenient wrapper to delete an object, this
 // is a common function to be called from object handlers and
 // web handlers.
-func deleteObject(obj ObjectLayer, bucket, object string, r *http.Request) (err error) {
-	// Acquire a write lock before deleting the object.
-	objectLock := globalNSMutex.NewNSLock(bucket, object)
-	objectLock.Lock()
-	defer objectLock.Unlock()
-
+func deleteObject(ctx context.Context, obj ObjectLayer, cache CacheObjectLayer, bucket, object string, r *http.Request) (err error) {
+	deleteObject := obj.DeleteObject
+	if cache != nil {
+		deleteObject = cache.DeleteObject
+	}
 	// Proceed to delete the object.
-	if err = obj.DeleteObject(bucket, object); err != nil {
+	if err = deleteObject(ctx, bucket, object); err != nil {
 		return err
 	}
 
-	// Get host and port from Request.RemoteAddr.
-	host, port, _ := net.SplitHostPort(r.RemoteAddr)
-
 	// Notify object deleted event.
-	eventNotify(eventData{
-		Type:   ObjectRemovedDelete,
-		Bucket: bucket,
-		ObjInfo: ObjectInfo{
+	sendEvent(eventArgs{
+		EventName:  event.ObjectRemovedDelete,
+		BucketName: bucket,
+		Object: ObjectInfo{
 			Name: object,
 		},
 		ReqParams: extractReqParams(r),
 		UserAgent: r.UserAgent(),
-		Host:      host,
-		Port:      port,
+		Host:      handlers.GetSourceIP(r),
 	})
 
 	return nil

@@ -14,7 +14,7 @@
 
 .fe-body {
 	@media(min-width: @screen-md-min) {
-		padding: 0 0 40px @fe-sidebar-width;
+		padding: 0 0 80px @fe-sidebar-width;
 	}
 
 	@media(max-width: @screen-sm-max) {
@@ -62,7 +62,7 @@
 			background: darken(@red, 10%);
 
 			& > span {
-				.rotate(135deg);
+				transform: translateZ(1px) rotate(135deg);
 			}
 		}
 	}
@@ -79,7 +79,7 @@
 	text-align: center;
 	border: 0;
 	padding: 0;
-	
+
 	span {
 		display: inline-block;
 		height: 100%;
@@ -89,7 +89,7 @@
 	i {
 		color: @white;
 		font-size: 17px;
-		line-height: 58px;
+		line-height: 55px;
 	}
 }
 

@@ -1,7 +1,7 @@
 /*
  * Quick - Quick key value store for config files and persistent state files
  *
- * Quick (C) 2015 Minio, Inc.
+ * Quick (C) 2015 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -60,17 +60,16 @@ func FormatJSONSyntaxError(data io.Reader, offset int64) (highlight string) {
 		if readBytes > offset {
 			break
 		}
-		switch b {
-		case '\n':
+		if b == '\n' {
 			readLine.Reset()
 			errLine++
-		case '\t':
+			continue
+		} else if b == '\t' {
 			readLine.WriteByte(' ')
-		case '\r':
+		} else if b == '\r' {
 			break
-		default:
-			readLine.WriteByte(b)
 		}
+		readLine.WriteByte(b)
 	}
 
 	lineLen := readLine.Len()

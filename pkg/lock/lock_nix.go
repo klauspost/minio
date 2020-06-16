@@ -1,7 +1,7 @@
 // +build !windows,!plan9,!solaris
 
 /*
- * Minio Cloud Storage, (C) 2016 Minio, Inc.
+ * MinIO Cloud Storage, (C) 2016 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,7 +19,6 @@
 package lock
 
 import (
-	"fmt"
 	"os"
 	"syscall"
 )
@@ -39,7 +38,11 @@ func lockedOpenFile(path string, flag int, perm os.FileMode, lockType int) (*Loc
 	case syscall.O_RDWR | syscall.O_CREAT:
 		lockType |= syscall.LOCK_EX
 	default:
-		return nil, fmt.Errorf("Unsupported flag (%d)", flag)
+		return nil, &os.PathError{
+			Op:   "open",
+			Path: path,
+			Err:  syscall.EINVAL,
+		}
 	}
 
 	f, err := os.OpenFile(path, flag|syscall.O_SYNC, perm)
@@ -89,4 +92,9 @@ func TryLockedOpenFile(path string, flag int, perm os.FileMode) (*LockedFile, er
 // for os.OpenFile().
 func LockedOpenFile(path string, flag int, perm os.FileMode) (*LockedFile, error) {
 	return lockedOpenFile(path, flag, perm, 0)
+}
+
+// Open - Call os.OpenFile
+func Open(path string, flag int, perm os.FileMode) (*os.File, error) {
+	return os.OpenFile(path, flag, perm)
 }

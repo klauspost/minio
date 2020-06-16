@@ -1,5 +1,5 @@
 /*
- * Minio Cloud Storage, (C) 2016 Minio, Inc.
+ * MinIO Cloud Storage, (C) 2016 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,9 +17,7 @@
 package madmin
 
 import (
-	"crypto/md5"
-	"crypto/sha256"
-	"encoding/xml"
+	"encoding/json"
 	"io"
 	"io/ioutil"
 	"net"
@@ -27,7 +25,16 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/minio/minio-go/pkg/s3utils"
+	sha256 "github.com/minio/sha256-simd"
+
+	"github.com/minio/minio-go/v6/pkg/s3utils"
+)
+
+// AdminAPIVersion - admin api version used in the request.
+const (
+	AdminAPIVersion   = "v3"
+	AdminAPIVersionV2 = "v2"
+	adminAPIPrefix    = "/" + AdminAPIVersion
 )
 
 // sum256 calculate sha256 sum for an input byte array.
@@ -37,16 +44,9 @@ func sum256(data []byte) []byte {
 	return hash.Sum(nil)
 }
 
-// sumMD5 calculate sumMD5 sum for an input byte array.
-func sumMD5(data []byte) []byte {
-	hash := md5.New()
-	hash.Write(data)
-	return hash.Sum(nil)
-}
-
-// xmlDecoder provide decoded value in xml.
-func xmlDecoder(body io.Reader, v interface{}) error {
-	d := xml.NewDecoder(body)
+// jsonDecoder decode json to go type.
+func jsonDecoder(body io.Reader, v interface{}) error {
+	d := json.NewDecoder(body)
 	return d.Decode(v)
 }
 

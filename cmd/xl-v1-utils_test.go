@@ -1,5 +1,5 @@
 /*
- * Minio Cloud Storage, (C) 2015, 2016, 2017 Minio, Inc.
+ * MinIO Cloud Storage, (C) 2015, 2016, 2017 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,10 +17,11 @@
 package cmd
 
 import (
+	"bytes"
+	"context"
+	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"reflect"
-	"strconv"
 	"testing"
 
 	humanize "github.com/dustin/go-humanize"
@@ -89,12 +90,12 @@ func TestReduceErrs(t *testing.T) {
 	}
 	// Validates list of all the testcases for returning valid errors.
 	for i, testCase := range testCases {
-		gotErr := reduceReadQuorumErrs(testCase.errs, testCase.ignoredErrs, 5)
-		if errorCause(gotErr) != testCase.err {
+		gotErr := reduceReadQuorumErrs(GlobalContext, testCase.errs, testCase.ignoredErrs, 5)
+		if gotErr != testCase.err {
 			t.Errorf("Test %d : expected %s, got %s", i+1, testCase.err, gotErr)
 		}
-		gotNewErr := reduceWriteQuorumErrs(testCase.errs, testCase.ignoredErrs, 6)
-		if errorCause(gotNewErr) != errXLWriteQuorum {
+		gotNewErr := reduceWriteQuorumErrs(GlobalContext, testCase.errs, testCase.ignoredErrs, 6)
+		if gotNewErr != errXLWriteQuorum {
 			t.Errorf("Test %d : expected %s, got %s", i+1, errXLWriteQuorum, gotErr)
 		}
 	}
@@ -108,14 +109,14 @@ func TestHashOrder(t *testing.T) {
 	}{
 		// cases which should pass the test.
 		// passing in valid object name.
-		{"object", []int{15, 16, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14}},
-		{"The Shining Script <v1>.pdf", []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}},
+		{"object", []int{14, 15, 16, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13}},
+		{"The Shining Script <v1>.pdf", []int{16, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}},
 		{"Cost Benefit Analysis (2009-2010).pptx", []int{15, 16, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14}},
 		{"117Gn8rfHL2ACARPAhaFd0AGzic9pUbIA/5OCn5A", []int{3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 1, 2}},
 		{"SHØRT", []int{11, 12, 13, 14, 15, 16, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10}},
 		{"There are far too many object names, and far too few bucket names!", []int{15, 16, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14}},
 		{"a/b/c/", []int{3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 1, 2}},
-		{"/a/b/c", []int{7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 1, 2, 3, 4, 5, 6}},
+		{"/a/b/c", []int{6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 1, 2, 3, 4, 5}},
 		{string([]byte{0xff, 0xfe, 0xfd}), []int{15, 16, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14}},
 	}
 
@@ -123,12 +124,16 @@ func TestHashOrder(t *testing.T) {
 	for i, testCase := range testCases {
 		hashedOrder := hashOrder(testCase.objectName, 16)
 		if !reflect.DeepEqual(testCase.hashedOrder, hashedOrder) {
-			t.Errorf("Test case %d: Expected \"%#v\" but failed \"%#v\"", i+1, testCase.hashedOrder, hashedOrder)
+			t.Errorf("Test case %d: Expected \"%v\" but failed \"%v\"", i+1, testCase.hashedOrder, hashedOrder)
 		}
 	}
 
 	// Tests hashing order to fail for when order is '-1'.
 	if hashedOrder := hashOrder("This will fail", -1); hashedOrder != nil {
+		t.Errorf("Test: Expect \"nil\" but failed \"%#v\"", hashedOrder)
+	}
+
+	if hashedOrder := hashOrder("This will fail", 0); hashedOrder != nil {
 		t.Errorf("Test: Expect \"nil\" but failed \"%#v\"", hashedOrder)
 	}
 }
@@ -139,7 +144,7 @@ func newTestXLMetaV1() xlMetaV1 {
 	xlMeta.Version = xlMetaVersion
 	xlMeta.Format = xlMetaFormat
 	xlMeta.Minio.Release = "test"
-	xlMeta.Erasure = erasureInfo{
+	xlMeta.Erasure = ErasureInfo{
 		Algorithm:    "klauspost/reedsolomon/vandermonde",
 		DataBlocks:   5,
 		ParityBlocks: 5,
@@ -158,26 +163,23 @@ func newTestXLMetaV1() xlMetaV1 {
 	return xlMeta
 }
 
-func (m *xlMetaV1) AddTestObjectCheckSum(checkSumNum int, name string, hash string, algo HashAlgo) {
-	checkSum := checkSumInfo{
-		Name:      name,
-		Algorithm: algo,
-		Hash:      hash,
+func (m *xlMetaV1) AddTestObjectCheckSum(partNumber int, algorithm BitrotAlgorithm, hash string) {
+	checksum, err := hex.DecodeString(hash)
+	if err != nil {
+		panic(err)
 	}
-	m.Erasure.Checksum[checkSumNum] = checkSum
+	m.Erasure.Checksums[partNumber-1] = ChecksumInfo{partNumber, algorithm, checksum}
 }
 
 // AddTestObjectPart - add a new object part in order.
-func (m *xlMetaV1) AddTestObjectPart(partNumber int, partName string, partETag string, partSize int64) {
-	partInfo := objectPartInfo{
+func (m *xlMetaV1) AddTestObjectPart(partNumber int, partSize int64) {
+	partInfo := ObjectPartInfo{
 		Number: partNumber,
-		Name:   partName,
-		ETag:   partETag,
 		Size:   partSize,
 	}
 
 	// Proceed to include new part info.
-	m.Parts[partNumber] = partInfo
+	m.Parts[partNumber-1] = partInfo
 }
 
 // Constructs xlMetaV1{} for given number of parts and converts it into bytes.
@@ -194,141 +196,134 @@ func getXLMetaBytes(totalParts int) []byte {
 func getSampleXLMeta(totalParts int) xlMetaV1 {
 	xlMeta := newTestXLMetaV1()
 	// Number of checksum info == total parts.
-	xlMeta.Erasure.Checksum = make([]checkSumInfo, totalParts)
+	xlMeta.Erasure.Checksums = make([]ChecksumInfo, totalParts)
 	// total number of parts.
-	xlMeta.Parts = make([]objectPartInfo, totalParts)
+	xlMeta.Parts = make([]ObjectPartInfo, totalParts)
 	for i := 0; i < totalParts; i++ {
-		partName := "part." + strconv.Itoa(i+1)
 		// hard coding hash and algo value for the checksum, Since we are benchmarking the parsing of xl.json the magnitude doesn't affect the test,
 		// The magnitude doesn't make a difference, only the size does.
-		xlMeta.AddTestObjectCheckSum(i, partName, "a23f5eff248c4372badd9f3b2455a285cd4ca86c3d9a570b091d3fc5cd7ca6d9484bbea3f8c5d8d4f84daae96874419eda578fd736455334afbac2c924b3915a", "blake2b")
-		xlMeta.AddTestObjectPart(i, partName, "d3fdd79cc3efd5fe5c068d7be397934b", 67108864)
+		xlMeta.AddTestObjectCheckSum(i+1, BLAKE2b512, "a23f5eff248c4372badd9f3b2455a285cd4ca86c3d9a570b091d3fc5cd7ca6d9484bbea3f8c5d8d4f84daae96874419eda578fd736455334afbac2c924b3915a")
+		xlMeta.AddTestObjectPart(i+1, 67108864)
 	}
 	return xlMeta
 }
 
-// Compare the unmarshaled XLMetaV1 with the one obtained from gjson parsing.
-func compareXLMetaV1(t *testing.T, unMarshalXLMeta, gjsonXLMeta xlMetaV1) {
-
-	// Start comparing the fields of xlMetaV1 obtained from gjson parsing with one parsed using json unmarshaling.
-	if unMarshalXLMeta.Version != gjsonXLMeta.Version {
-		t.Errorf("Expected the Version to be \"%s\", but got \"%s\".", unMarshalXLMeta.Version, gjsonXLMeta.Version)
+// Compare the unmarshaled XLMetaV1 with the one obtained from jsoniter parsing.
+func compareXLMetaV1(t *testing.T, unMarshalXLMeta, jsoniterXLMeta xlMetaV1) {
+	// Start comparing the fields of xlMetaV1 obtained from jsoniter parsing with one parsed using json unmarshaling.
+	if unMarshalXLMeta.Version != jsoniterXLMeta.Version {
+		t.Errorf("Expected the Version to be \"%s\", but got \"%s\".", unMarshalXLMeta.Version, jsoniterXLMeta.Version)
 	}
-	if unMarshalXLMeta.Format != gjsonXLMeta.Format {
-		t.Errorf("Expected the format to be \"%s\", but got \"%s\".", unMarshalXLMeta.Format, gjsonXLMeta.Format)
+	if unMarshalXLMeta.Format != jsoniterXLMeta.Format {
+		t.Errorf("Expected the format to be \"%s\", but got \"%s\".", unMarshalXLMeta.Format, jsoniterXLMeta.Format)
 	}
-	if unMarshalXLMeta.Stat.Size != gjsonXLMeta.Stat.Size {
-		t.Errorf("Expected the stat size to be %v, but got %v.", unMarshalXLMeta.Stat.Size, gjsonXLMeta.Stat.Size)
+	if unMarshalXLMeta.Stat.Size != jsoniterXLMeta.Stat.Size {
+		t.Errorf("Expected the stat size to be %v, but got %v.", unMarshalXLMeta.Stat.Size, jsoniterXLMeta.Stat.Size)
 	}
-	if !unMarshalXLMeta.Stat.ModTime.Equal(gjsonXLMeta.Stat.ModTime) {
-		t.Errorf("Expected the modTime to be \"%v\", but got \"%v\".", unMarshalXLMeta.Stat.ModTime, gjsonXLMeta.Stat.ModTime)
+	if !unMarshalXLMeta.Stat.ModTime.Equal(jsoniterXLMeta.Stat.ModTime) {
+		t.Errorf("Expected the modTime to be \"%v\", but got \"%v\".", unMarshalXLMeta.Stat.ModTime, jsoniterXLMeta.Stat.ModTime)
 	}
-	if unMarshalXLMeta.Erasure.Algorithm != gjsonXLMeta.Erasure.Algorithm {
-		t.Errorf("Expected the erasure algorithm to be \"%v\", but got \"%v\".", unMarshalXLMeta.Erasure.Algorithm, gjsonXLMeta.Erasure.Algorithm)
+	if unMarshalXLMeta.Erasure.Algorithm != jsoniterXLMeta.Erasure.Algorithm {
+		t.Errorf("Expected the erasure algorithm to be \"%v\", but got \"%v\".", unMarshalXLMeta.Erasure.Algorithm, jsoniterXLMeta.Erasure.Algorithm)
 	}
-	if unMarshalXLMeta.Erasure.DataBlocks != gjsonXLMeta.Erasure.DataBlocks {
-		t.Errorf("Expected the erasure data blocks to be %v, but got %v.", unMarshalXLMeta.Erasure.DataBlocks, gjsonXLMeta.Erasure.DataBlocks)
+	if unMarshalXLMeta.Erasure.DataBlocks != jsoniterXLMeta.Erasure.DataBlocks {
+		t.Errorf("Expected the erasure data blocks to be %v, but got %v.", unMarshalXLMeta.Erasure.DataBlocks, jsoniterXLMeta.Erasure.DataBlocks)
 	}
-	if unMarshalXLMeta.Erasure.ParityBlocks != gjsonXLMeta.Erasure.ParityBlocks {
-		t.Errorf("Expected the erasure parity blocks to be %v, but got %v.", unMarshalXLMeta.Erasure.ParityBlocks, gjsonXLMeta.Erasure.ParityBlocks)
+	if unMarshalXLMeta.Erasure.ParityBlocks != jsoniterXLMeta.Erasure.ParityBlocks {
+		t.Errorf("Expected the erasure parity blocks to be %v, but got %v.", unMarshalXLMeta.Erasure.ParityBlocks, jsoniterXLMeta.Erasure.ParityBlocks)
 	}
-	if unMarshalXLMeta.Erasure.BlockSize != gjsonXLMeta.Erasure.BlockSize {
-		t.Errorf("Expected the erasure block size to be %v, but got %v.", unMarshalXLMeta.Erasure.BlockSize, gjsonXLMeta.Erasure.BlockSize)
+	if unMarshalXLMeta.Erasure.BlockSize != jsoniterXLMeta.Erasure.BlockSize {
+		t.Errorf("Expected the erasure block size to be %v, but got %v.", unMarshalXLMeta.Erasure.BlockSize, jsoniterXLMeta.Erasure.BlockSize)
 	}
-	if unMarshalXLMeta.Erasure.Index != gjsonXLMeta.Erasure.Index {
-		t.Errorf("Expected the erasure index to be %v, but got %v.", unMarshalXLMeta.Erasure.Index, gjsonXLMeta.Erasure.Index)
+	if unMarshalXLMeta.Erasure.Index != jsoniterXLMeta.Erasure.Index {
+		t.Errorf("Expected the erasure index to be %v, but got %v.", unMarshalXLMeta.Erasure.Index, jsoniterXLMeta.Erasure.Index)
 	}
-	if len(unMarshalXLMeta.Erasure.Distribution) != len(gjsonXLMeta.Erasure.Distribution) {
-		t.Errorf("Expected the size of Erasure Distribution to be %d, but got %d.", len(unMarshalXLMeta.Erasure.Distribution), len(gjsonXLMeta.Erasure.Distribution))
+	if len(unMarshalXLMeta.Erasure.Distribution) != len(jsoniterXLMeta.Erasure.Distribution) {
+		t.Errorf("Expected the size of Erasure Distribution to be %d, but got %d.", len(unMarshalXLMeta.Erasure.Distribution), len(jsoniterXLMeta.Erasure.Distribution))
 	} else {
 		for i := 0; i < len(unMarshalXLMeta.Erasure.Distribution); i++ {
-			if unMarshalXLMeta.Erasure.Distribution[i] != gjsonXLMeta.Erasure.Distribution[i] {
-				t.Errorf("Expected the Erasure Distribution to be %d, got %d.", unMarshalXLMeta.Erasure.Distribution[i], gjsonXLMeta.Erasure.Distribution[i])
+			if unMarshalXLMeta.Erasure.Distribution[i] != jsoniterXLMeta.Erasure.Distribution[i] {
+				t.Errorf("Expected the Erasure Distribution to be %d, got %d.", unMarshalXLMeta.Erasure.Distribution[i], jsoniterXLMeta.Erasure.Distribution[i])
 			}
 		}
 	}
 
-	if len(unMarshalXLMeta.Erasure.Checksum) != len(gjsonXLMeta.Erasure.Checksum) {
-		t.Errorf("Expected the size of Erasure Checksum to be %d, but got %d.", len(unMarshalXLMeta.Erasure.Checksum), len(gjsonXLMeta.Erasure.Checksum))
+	if len(unMarshalXLMeta.Erasure.Checksums) != len(jsoniterXLMeta.Erasure.Checksums) {
+		t.Errorf("Expected the size of Erasure Checksums to be %d, but got %d.", len(unMarshalXLMeta.Erasure.Checksums), len(jsoniterXLMeta.Erasure.Checksums))
 	} else {
-		for i := 0; i < len(unMarshalXLMeta.Erasure.Checksum); i++ {
-			if unMarshalXLMeta.Erasure.Checksum[i].Name != gjsonXLMeta.Erasure.Checksum[i].Name {
-				t.Errorf("Expected the Erasure Checksum Name to be \"%s\", got \"%s\".", unMarshalXLMeta.Erasure.Checksum[i].Name, gjsonXLMeta.Erasure.Checksum[i].Name)
+		for i := 0; i < len(unMarshalXLMeta.Erasure.Checksums); i++ {
+			if unMarshalXLMeta.Erasure.Checksums[i].PartNumber != jsoniterXLMeta.Erasure.Checksums[i].PartNumber {
+				t.Errorf("Expected the Erasure Checksum PartNumber to be \"%d\", got \"%d\".", unMarshalXLMeta.Erasure.Checksums[i].PartNumber, jsoniterXLMeta.Erasure.Checksums[i].PartNumber)
 			}
-			if unMarshalXLMeta.Erasure.Checksum[i].Algorithm != gjsonXLMeta.Erasure.Checksum[i].Algorithm {
-				t.Errorf("Expected the Erasure Checksum Algorithm to be \"%s\", got \"%s.\"", unMarshalXLMeta.Erasure.Checksum[i].Algorithm, gjsonXLMeta.Erasure.Checksum[i].Algorithm)
+			if unMarshalXLMeta.Erasure.Checksums[i].Algorithm != jsoniterXLMeta.Erasure.Checksums[i].Algorithm {
+				t.Errorf("Expected the Erasure Checksum Algorithm to be \"%s\", got \"%s\".", unMarshalXLMeta.Erasure.Checksums[i].Algorithm, jsoniterXLMeta.Erasure.Checksums[i].Algorithm)
 			}
-			if unMarshalXLMeta.Erasure.Checksum[i] != gjsonXLMeta.Erasure.Checksum[i] {
-				t.Errorf("Expected the Erasure Checksum Hash to be \"%s\", got \"%s\".", unMarshalXLMeta.Erasure.Checksum[i].Hash, gjsonXLMeta.Erasure.Checksum[i].Hash)
+			if !bytes.Equal(unMarshalXLMeta.Erasure.Checksums[i].Hash, jsoniterXLMeta.Erasure.Checksums[i].Hash) {
+				t.Errorf("Expected the Erasure Checksum Hash to be \"%s\", got \"%s\".", unMarshalXLMeta.Erasure.Checksums[i].Hash, jsoniterXLMeta.Erasure.Checksums[i].Hash)
 			}
 		}
 	}
-	if unMarshalXLMeta.Minio.Release != gjsonXLMeta.Minio.Release {
-		t.Errorf("Expected the Release string to be \"%s\", but got \"%s\".", unMarshalXLMeta.Minio.Release, gjsonXLMeta.Minio.Release)
+
+	if unMarshalXLMeta.Minio.Release != jsoniterXLMeta.Minio.Release {
+		t.Errorf("Expected the Release string to be \"%s\", but got \"%s\".", unMarshalXLMeta.Minio.Release, jsoniterXLMeta.Minio.Release)
 	}
-	if len(unMarshalXLMeta.Parts) != len(gjsonXLMeta.Parts) {
-		t.Errorf("Expected info of  %d parts to be present, but got %d instead.", len(unMarshalXLMeta.Parts), len(gjsonXLMeta.Parts))
+	if len(unMarshalXLMeta.Parts) != len(jsoniterXLMeta.Parts) {
+		t.Errorf("Expected info of  %d parts to be present, but got %d instead.", len(unMarshalXLMeta.Parts), len(jsoniterXLMeta.Parts))
 	} else {
 		for i := 0; i < len(unMarshalXLMeta.Parts); i++ {
-			if unMarshalXLMeta.Parts[i].Name != gjsonXLMeta.Parts[i].Name {
-				t.Errorf("Expected the name of part %d to be \"%s\", got \"%s\".", i+1, unMarshalXLMeta.Parts[i].Name, gjsonXLMeta.Parts[i].Name)
+			if unMarshalXLMeta.Parts[i].Number != jsoniterXLMeta.Parts[i].Number {
+				t.Errorf("Expected the number of part %d to be \"%d\", got \"%d\".", i+1, unMarshalXLMeta.Parts[i].Number, jsoniterXLMeta.Parts[i].Number)
 			}
-			if unMarshalXLMeta.Parts[i].ETag != gjsonXLMeta.Parts[i].ETag {
-				t.Errorf("Expected the ETag of part %d to be \"%s\", got \"%s\".", i+1, unMarshalXLMeta.Parts[i].ETag, gjsonXLMeta.Parts[i].ETag)
-			}
-			if unMarshalXLMeta.Parts[i].Number != gjsonXLMeta.Parts[i].Number {
-				t.Errorf("Expected the number of part %d to be \"%d\", got \"%d\".", i+1, unMarshalXLMeta.Parts[i].Number, gjsonXLMeta.Parts[i].Number)
-			}
-			if unMarshalXLMeta.Parts[i].Size != gjsonXLMeta.Parts[i].Size {
-				t.Errorf("Expected the size of part %d to be %v, got %v.", i+1, unMarshalXLMeta.Parts[i].Size, gjsonXLMeta.Parts[i].Size)
+			if unMarshalXLMeta.Parts[i].Size != jsoniterXLMeta.Parts[i].Size {
+				t.Errorf("Expected the size of part %d to be %v, got %v.", i+1, unMarshalXLMeta.Parts[i].Size, jsoniterXLMeta.Parts[i].Size)
 			}
 		}
 	}
 
 	for key, val := range unMarshalXLMeta.Meta {
-		gjsonVal, exists := gjsonXLMeta.Meta[key]
+		jsoniterVal, exists := jsoniterXLMeta.Meta[key]
 		if !exists {
 			t.Errorf("No meta data entry for Key \"%s\" exists.", key)
 		}
-		if val != gjsonVal {
-			t.Errorf("Expected the value for Meta data key \"%s\" to be \"%s\", but got \"%s\".", key, val, gjsonVal)
+		if val != jsoniterVal {
+			t.Errorf("Expected the value for Meta data key \"%s\" to be \"%s\", but got \"%s\".", key, val, jsoniterVal)
 		}
 
 	}
 }
 
-// Tests the correctness of constructing XLMetaV1 using gjson lib.
+// Tests the correctness of constructing XLMetaV1 using jsoniter lib.
 // The result will be compared with the result obtained from json.unMarshal of the byte data.
-func TestGetXLMetaV1GJson1(t *testing.T) {
+func TestGetXLMetaV1Jsoniter1(t *testing.T) {
 	xlMetaJSON := getXLMetaBytes(1)
 
 	var unMarshalXLMeta xlMetaV1
 	if err := json.Unmarshal(xlMetaJSON, &unMarshalXLMeta); err != nil {
-		t.Errorf("Unmarshalling failed")
+		t.Errorf("Unmarshalling failed: %v", err)
 	}
 
-	gjsonXLMeta, err := xlMetaV1UnmarshalJSON(xlMetaJSON)
+	jsoniterXLMeta, err := xlMetaV1UnmarshalJSON(GlobalContext, xlMetaJSON)
 	if err != nil {
-		t.Errorf("gjson parsing of XLMeta failed")
+		t.Errorf("jsoniter parsing of XLMeta failed: %v", err)
 	}
-	compareXLMetaV1(t, unMarshalXLMeta, gjsonXLMeta)
+	compareXLMetaV1(t, unMarshalXLMeta, jsoniterXLMeta)
 }
 
-// Tests the correctness of constructing XLMetaV1 using gjson lib for XLMetaV1 of size 10 parts.
+// Tests the correctness of constructing XLMetaV1 using jsoniter lib for XLMetaV1 of size 10 parts.
 // The result will be compared with the result obtained from json.unMarshal of the byte data.
-func TestGetXLMetaV1GJson10(t *testing.T) {
+func TestGetXLMetaV1Jsoniter10(t *testing.T) {
 
 	xlMetaJSON := getXLMetaBytes(10)
 
 	var unMarshalXLMeta xlMetaV1
 	if err := json.Unmarshal(xlMetaJSON, &unMarshalXLMeta); err != nil {
-		t.Errorf("Unmarshalling failed")
+		t.Errorf("Unmarshalling failed: %v", err)
 	}
-	gjsonXLMeta, err := xlMetaV1UnmarshalJSON(xlMetaJSON)
+	jsoniterXLMeta, err := xlMetaV1UnmarshalJSON(GlobalContext, xlMetaJSON)
 	if err != nil {
-		t.Errorf("gjson parsing of XLMeta failed")
+		t.Errorf("jsoniter parsing of XLMeta failed: %v", err)
 	}
-	compareXLMetaV1(t, unMarshalXLMeta, gjsonXLMeta)
+	compareXLMetaV1(t, unMarshalXLMeta, jsoniterXLMeta)
 }
 
 // Test the predicted part size from the part index
@@ -340,8 +335,6 @@ func TestGetPartSizeFromIdx(t *testing.T) {
 		partIndex    int
 		expectedSize int64
 	}{
-		// Total size is - 1
-		{-1, 10, 1, -1},
 		// Total size is zero
 		{0, 10, 1, 0},
 		// part size 2MiB, total size 4MiB
@@ -356,7 +349,7 @@ func TestGetPartSizeFromIdx(t *testing.T) {
 	}
 
 	for i, testCase := range testCases {
-		s, err := getPartSizeFromIdx(testCase.totalSize, testCase.partSize, testCase.partIndex)
+		s, err := calculatePartSizeFromIdx(GlobalContext, testCase.totalSize, testCase.partSize, testCase.partIndex)
 		if err != nil {
 			t.Errorf("Test %d: Expected to pass but failed. %s", i+1, err)
 		}
@@ -371,41 +364,47 @@ func TestGetPartSizeFromIdx(t *testing.T) {
 		partIndex int
 		err       error
 	}{
-		// partSize is 0, error.
+		// partSize is 0, returns error.
 		{10, 0, 1, errPartSizeZero},
+		// partIndex is 0, returns error.
 		{10, 1, 0, errPartSizeIndex},
+		// Total size is -1, returns error.
+		{-2, 10, 1, errInvalidArgument},
 	}
 
 	for i, testCaseFailure := range testCasesFailure {
-		_, err := getPartSizeFromIdx(testCaseFailure.totalSize, testCaseFailure.partSize, testCaseFailure.partIndex)
+		_, err := calculatePartSizeFromIdx(GlobalContext, testCaseFailure.totalSize, testCaseFailure.partSize, testCaseFailure.partIndex)
 		if err == nil {
 			t.Errorf("Test %d: Expected to failed but passed. %s", i+1, err)
 		}
-		if err != nil && errorCause(err) != testCaseFailure.err {
-			t.Errorf("Test %d: Expected err %s, but got %s", i+1, testCaseFailure.err, errorCause(err))
+		if err != nil && err != testCaseFailure.err {
+			t.Errorf("Test %d: Expected err %s, but got %s", i+1, testCaseFailure.err, err)
 		}
 	}
 }
 
 func TestShuffleDisks(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	nDisks := 16
 	disks, err := getRandomDisks(nDisks)
 	if err != nil {
 		t.Fatal(err)
 	}
-	objLayer, _, err := initObjectLayer(mustGetNewEndpointList(disks...))
+	objLayer, _, err := initObjectLayer(ctx, mustGetZoneEndpoints(disks...))
 	if err != nil {
 		removeRoots(disks)
 		t.Fatal(err)
 	}
 	defer removeRoots(disks)
-	xl := objLayer.(*xlObjects)
-	testShuffleDisks(t, xl)
+	z := objLayer.(*xlZones)
+	testShuffleDisks(t, z)
 }
 
 // Test shuffleDisks which returns shuffled slice of disks for their actual distribution.
-func testShuffleDisks(t *testing.T, xl *xlObjects) {
-	disks := xl.storageDisks
+func testShuffleDisks(t *testing.T, z *xlZones) {
+	disks := z.zones[0].GetDisks(0)()
 	distribution := []int{16, 14, 12, 10, 8, 6, 4, 2, 1, 3, 5, 7, 9, 11, 13, 15}
 	shuffledDisks := shuffleDisks(disks, distribution)
 	// From the "distribution" above you can notice that:
@@ -433,58 +432,20 @@ func testShuffleDisks(t *testing.T, xl *xlObjects) {
 
 // TestEvalDisks tests the behavior of evalDisks
 func TestEvalDisks(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	nDisks := 16
 	disks, err := getRandomDisks(nDisks)
 	if err != nil {
 		t.Fatal(err)
 	}
-	objLayer, _, err := initObjectLayer(mustGetNewEndpointList(disks...))
+	objLayer, _, err := initObjectLayer(ctx, mustGetZoneEndpoints(disks...))
 	if err != nil {
 		removeRoots(disks)
 		t.Fatal(err)
 	}
 	defer removeRoots(disks)
-	xl := objLayer.(*xlObjects)
-	testShuffleDisks(t, xl)
-}
-
-func testEvalDisks(t *testing.T, xl *xlObjects) {
-	disks := xl.storageDisks
-
-	diskErr := errors.New("some disk error")
-	errs := []error{
-		diskErr, nil, nil, nil,
-		nil, diskErr, nil, nil,
-		diskErr, nil, nil, nil,
-		nil, nil, nil, diskErr,
-	}
-
-	// Test normal setup with some disks
-	// returning errors
-	newDisks := evalDisks(disks, errs)
-	if newDisks[0] != nil ||
-		newDisks[1] != disks[1] ||
-		newDisks[2] != disks[2] ||
-		newDisks[3] != disks[3] ||
-		newDisks[4] != disks[4] ||
-		newDisks[5] != nil ||
-		newDisks[6] != disks[6] ||
-		newDisks[7] != disks[7] ||
-		newDisks[8] != nil ||
-		newDisks[9] != disks[9] ||
-		newDisks[10] != disks[10] ||
-		newDisks[11] != disks[11] ||
-		newDisks[12] != disks[12] ||
-		newDisks[13] != disks[13] ||
-		newDisks[14] != disks[14] ||
-		newDisks[15] != nil {
-		t.Errorf("evalDisks returned incorrect new disk set.")
-	}
-
-	// Test when number of errs doesn't match with number of disks
-	errs = []error{nil, nil, nil, nil}
-	newDisks = evalDisks(disks, errs)
-	if newDisks != nil {
-		t.Errorf("evalDisks returned no nil slice")
-	}
+	z := objLayer.(*xlZones)
+	testShuffleDisks(t, z)
 }

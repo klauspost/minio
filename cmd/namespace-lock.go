@@ -1,5 +1,5 @@
 /*
- * Minio Cloud Storage, (C) 2016 Minio, Inc.
+ * MinIO Cloud Storage, (C) 2016, 2017, 2018, 2019 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,293 +17,257 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	pathutil "path"
+	"runtime"
+	"sort"
+	"strings"
 	"sync"
 
-	"github.com/minio/dsync"
+	"fmt"
+	"time"
+
+	"github.com/minio/minio/cmd/logger"
+	"github.com/minio/minio/pkg/dsync"
+	"github.com/minio/minio/pkg/lsync"
 )
 
-// Global name space lock.
-var globalNSMutex *nsLockMap
+// local lock servers
+var globalLockServers = make(map[Endpoint]*localLocker)
 
-// Global lock servers
-var globalLockServers []*lockServer
-
-// RWLocker - locker interface extends sync.Locker
-// to introduce RLock, RUnlock.
+// RWLocker - locker interface to introduce GetRLock, RUnlock.
 type RWLocker interface {
-	sync.Locker
-	RLock()
+	GetLock(timeout *dynamicTimeout) (timedOutErr error)
+	Unlock()
+	GetRLock(timeout *dynamicTimeout) (timedOutErr error)
 	RUnlock()
 }
 
-// Initialize distributed locking only in case of distributed setup.
-// Returns lock clients and the node index for the current server.
-func newDsyncNodes(endpoints EndpointList) (clnts []dsync.NetLocker, myNode int) {
-	cred := serverConfig.GetCredential()
-	clnts = make([]dsync.NetLocker, len(endpoints))
-	myNode = -1
-	for index, endpoint := range endpoints {
-		if !endpoint.IsLocal {
-			// For a remote endpoints setup a lock RPC client.
-			clnts[index] = newLockRPCClient(authConfig{
-				accessKey:       cred.AccessKey,
-				secretKey:       cred.SecretKey,
-				serverAddr:      endpoint.Host,
-				secureConn:      globalIsSSL,
-				serviceEndpoint: pathutil.Join(minioReservedBucketPath, lockServicePath, endpoint.Path),
-				serviceName:     lockServiceName,
-			})
-			continue
-		}
-
-		// Local endpoint
-		if myNode == -1 {
-			myNode = index
-		}
-		// For a local endpoint, setup a local lock server to
-		// avoid network requests.
-		localLockServer := lockServer{
-			AuthRPCServer: AuthRPCServer{},
-			ll: localLocker{
-				mutex:           sync.Mutex{},
-				serviceEndpoint: endpoint.Path,
-				serverAddr:      endpoint.Host,
-				lockMap:         make(map[string][]lockRequesterInfo),
-			},
-		}
-		globalLockServers = append(globalLockServers, &localLockServer)
-		clnts[index] = &(localLockServer.ll)
-	}
-
-	return clnts, myNode
-}
-
-// initNSLock - initialize name space lock map.
-func initNSLock(isDistXL bool) {
-	globalNSMutex = &nsLockMap{
+// newNSLock - return a new name space lock map.
+func newNSLock(isDistXL bool) *nsLockMap {
+	nsMutex := nsLockMap{
 		isDistXL: isDistXL,
-		lockMap:  make(map[nsParam]*nsLock),
-		counters: &lockStat{},
 	}
-
-	// Initialize nsLockMap with entry for instrumentation information.
-	// Entries of <volume,path> -> stateInfo of locks
-	globalNSMutex.debugLockMap = make(map[nsParam]*debugLockInfoPerVolumePath)
-}
-
-// nsParam - carries name space resource.
-type nsParam struct {
-	volume string
-	path   string
+	if isDistXL {
+		return &nsMutex
+	}
+	nsMutex.lockMap = make(map[string]*nsLock)
+	return &nsMutex
 }
 
 // nsLock - provides primitives for locking critical namespace regions.
 type nsLock struct {
-	RWLocker
-	ref uint
+	ref int32
+	*lsync.LRWMutex
 }
 
 // nsLockMap - namespace lock map, provides primitives to Lock,
 // Unlock, RLock and RUnlock.
 type nsLockMap struct {
-	// Lock counter used for lock debugging.
-	counters     *lockStat
-	debugLockMap map[nsParam]*debugLockInfoPerVolumePath // Info for instrumentation on locks.
-
 	// Indicates if namespace is part of a distributed setup.
 	isDistXL     bool
-	lockMap      map[nsParam]*nsLock
+	lockMap      map[string]*nsLock
 	lockMapMutex sync.Mutex
 }
 
 // Lock the namespace resource.
-func (n *nsLockMap) lock(volume, path string, lockSource, opsID string, readLock bool) {
-	var nsLk *nsLock
-	n.lockMapMutex.Lock()
+func (n *nsLockMap) lock(ctx context.Context, volume string, path string, lockSource, opsID string, readLock bool, timeout time.Duration) (locked bool) {
+	resource := pathJoin(volume, path)
 
-	param := nsParam{volume, path}
-	nsLk, found := n.lockMap[param]
+	n.lockMapMutex.Lock()
+	nsLk, found := n.lockMap[resource]
 	if !found {
 		nsLk = &nsLock{
-			RWLocker: func() RWLocker {
-				if n.isDistXL {
-					return dsync.NewDRWMutex(pathJoin(volume, path))
-				}
-				return &sync.RWMutex{}
-			}(),
-			ref: 0,
+			LRWMutex: lsync.NewLRWMutex(),
 		}
-		n.lockMap[param] = nsLk
+		// Add a count to indicate that a parallel unlock doesn't clear this entry.
 	}
-	nsLk.ref++ // Update ref count here to avoid multiple races.
-
-	// Change the state of the lock to be blocked for the given
-	// pair of <volume, path> and <OperationID> till the lock
-	// unblocks. The lock for accessing `globalNSMutex` is held inside
-	// the function itself.
-	if err := n.statusNoneToBlocked(param, lockSource, opsID, readLock); err != nil {
-		errorIf(err, "Failed to set lock state to blocked")
-	}
-
-	// Unlock map before Locking NS which might block.
+	nsLk.ref++
+	n.lockMap[resource] = nsLk
 	n.lockMapMutex.Unlock()
 
-	// Locking here can block.
+	// Locking here will block (until timeout).
 	if readLock {
-		nsLk.RLock()
+		locked = nsLk.GetRLock(ctx, opsID, lockSource, timeout)
 	} else {
-		nsLk.Lock()
+		locked = nsLk.GetLock(ctx, opsID, lockSource, timeout)
 	}
 
-	// Changing the status of the operation from blocked to
-	// running.  change the state of the lock to be running (from
-	// blocked) for the given pair of <volume, path> and <OperationID>.
-	if err := n.statusBlockedToRunning(param, lockSource, opsID, readLock); err != nil {
-		errorIf(err, "Failed to set the lock state to running")
+	if !locked { // We failed to get the lock
+		// Decrement ref count since we failed to get the lock
+		n.lockMapMutex.Lock()
+		n.lockMap[resource].ref--
+		if n.lockMap[resource].ref < 0 {
+			logger.CriticalIf(GlobalContext, errors.New("resource reference count was lower than 0"))
+		}
+		if n.lockMap[resource].ref == 0 {
+			// Remove from the map if there are no more references.
+			delete(n.lockMap, resource)
+		}
+		n.lockMapMutex.Unlock()
 	}
+
+	return
 }
 
 // Unlock the namespace resource.
-func (n *nsLockMap) unlock(volume, path, opsID string, readLock bool) {
-	// nsLk.Unlock() will not block, hence locking the map for the
-	// entire function is fine.
+func (n *nsLockMap) unlock(volume string, path string, readLock bool) {
+	resource := pathJoin(volume, path)
+
 	n.lockMapMutex.Lock()
 	defer n.lockMapMutex.Unlock()
-
-	param := nsParam{volume, path}
-	if nsLk, found := n.lockMap[param]; found {
-		if readLock {
-			nsLk.RUnlock()
-		} else {
-			nsLk.Unlock()
-		}
-		if nsLk.ref == 0 {
-			errorIf(errors.New("Namespace reference count cannot be 0"),
-				"Invalid reference count detected")
-		}
-		if nsLk.ref != 0 {
-			nsLk.ref--
-
-			// delete the lock state entry for given operation ID.
-			err := n.deleteLockInfoEntryForOps(param, opsID)
-			if err != nil {
-				errorIf(err, "Failed to delete lock info entry")
-			}
-		}
-		if nsLk.ref == 0 {
-			// Remove from the map if there are no more references.
-			delete(n.lockMap, param)
-
-			// delete the lock state entry for given
-			// <volume, path> pair.
-			err := n.deleteLockInfoEntryForVolumePath(param)
-			if err != nil {
-				errorIf(err, "Failed to delete lock info entry")
-			}
-		}
+	if _, found := n.lockMap[resource]; !found {
+		return
+	}
+	if readLock {
+		n.lockMap[resource].RUnlock()
+	} else {
+		n.lockMap[resource].Unlock()
+	}
+	n.lockMap[resource].ref--
+	if n.lockMap[resource].ref < 0 {
+		logger.CriticalIf(GlobalContext, errors.New("resource reference count was lower than 0"))
+	}
+	if n.lockMap[resource].ref == 0 {
+		// Remove from the map if there are no more references.
+		delete(n.lockMap, resource)
 	}
 }
 
-// Lock - locks the given resource for writes, using a previously
-// allocated name space lock or initializing a new one.
-func (n *nsLockMap) Lock(volume, path, opsID string) {
-	readLock := false // This is a write lock.
-
-	lockSource := getSource() // Useful for debugging
-	n.lock(volume, path, lockSource, opsID, readLock)
+// dsync's distributed lock instance.
+type distLockInstance struct {
+	rwMutex *dsync.DRWMutex
+	opsID   string
+	ctx     context.Context
 }
 
-// Unlock - unlocks any previously acquired write locks.
-func (n *nsLockMap) Unlock(volume, path, opsID string) {
-	readLock := false
-	n.unlock(volume, path, opsID, readLock)
-}
+// Lock - block until write lock is taken or timeout has occurred.
+func (di *distLockInstance) GetLock(timeout *dynamicTimeout) (timedOutErr error) {
+	lockSource := getSource(2)
+	start := UTCNow()
 
-// RLock - locks any previously acquired read locks.
-func (n *nsLockMap) RLock(volume, path, opsID string) {
-	readLock := true
-
-	lockSource := getSource() // Useful for debugging
-	n.lock(volume, path, lockSource, opsID, readLock)
-}
-
-// RUnlock - unlocks any previously acquired read locks.
-func (n *nsLockMap) RUnlock(volume, path, opsID string) {
-	readLock := true
-	n.unlock(volume, path, opsID, readLock)
-}
-
-// ForceUnlock - forcefully unlock a lock based on name.
-func (n *nsLockMap) ForceUnlock(volume, path string) {
-	n.lockMapMutex.Lock()
-	defer n.lockMapMutex.Unlock()
-
-	// Clarification on operation:
-	// - In case of FS or XL we call ForceUnlock on the local globalNSMutex
-	//   (since there is only a single server) which will cause the 'stuck'
-	//   mutex to be removed from the map. Existing operations for this
-	//   will continue to be blocked (and timeout). New operations on this
-	//   resource will use a new mutex and proceed normally.
-	//
-	// - In case of Distributed setup (using dsync), there is no need to call
-	//   ForceUnlock on the server where the lock was acquired and is presumably
-	//   'stuck'. Instead dsync.ForceUnlock() will release the underlying locks
-	//   that participated in granting the lock. Any pending dsync locks that
-	//   are blocking can now proceed as normal and any new locks will also
-	//   participate normally.
-	if n.isDistXL { // For distributed mode, broadcast ForceUnlock message.
-		dsync.NewDRWMutex(pathJoin(volume, path)).ForceUnlock()
+	if !di.rwMutex.GetLock(di.ctx, di.opsID, lockSource, timeout.Timeout()) {
+		timeout.LogFailure()
+		return OperationTimedOut{}
 	}
-
-	param := nsParam{volume, path}
-	if _, found := n.lockMap[param]; found {
-		// Remove lock from the map.
-		delete(n.lockMap, param)
-	}
-
-	// delete the lock state entry for given
-	// <volume, path> pair. Ignore error as there
-	// is no way to report it back
-	n.deleteLockInfoEntryForVolumePath(param)
+	timeout.LogSuccess(UTCNow().Sub(start))
+	return nil
 }
 
-// lockInstance - frontend/top-level interface for namespace locks.
-type lockInstance struct {
-	ns                  *nsLockMap
-	volume, path, opsID string
+// Unlock - block until write lock is released.
+func (di *distLockInstance) Unlock() {
+	di.rwMutex.Unlock()
+}
+
+// RLock - block until read lock is taken or timeout has occurred.
+func (di *distLockInstance) GetRLock(timeout *dynamicTimeout) (timedOutErr error) {
+	lockSource := getSource(2)
+	start := UTCNow()
+	if !di.rwMutex.GetRLock(di.ctx, di.opsID, lockSource, timeout.Timeout()) {
+		timeout.LogFailure()
+		return OperationTimedOut{}
+	}
+	timeout.LogSuccess(UTCNow().Sub(start))
+	return nil
+}
+
+// RUnlock - block until read lock is released.
+func (di *distLockInstance) RUnlock() {
+	di.rwMutex.RUnlock()
+}
+
+// localLockInstance - frontend/top-level interface for namespace locks.
+type localLockInstance struct {
+	ctx    context.Context
+	ns     *nsLockMap
+	volume string
+	paths  []string
+	opsID  string
 }
 
 // NewNSLock - returns a lock instance for a given volume and
 // path. The returned lockInstance object encapsulates the nsLockMap,
 // volume, path and operation ID.
-func (n *nsLockMap) NewNSLock(volume, path string) RWLocker {
-	return &lockInstance{n, volume, path, getOpsID()}
+func (n *nsLockMap) NewNSLock(ctx context.Context, lockersFn func() []dsync.NetLocker, volume string, paths ...string) RWLocker {
+	opsID := mustGetUUID()
+	if n.isDistXL {
+		drwmutex := dsync.NewDRWMutex(&dsync.Dsync{
+			GetLockersFn: lockersFn,
+		}, pathsJoinPrefix(volume, paths...)...)
+		return &distLockInstance{drwmutex, opsID, ctx}
+	}
+	sort.Strings(paths)
+	return &localLockInstance{ctx, n, volume, paths, opsID}
 }
 
-// Lock - block until write lock is taken.
-func (li *lockInstance) Lock() {
-	lockSource := getSource()
+// Lock - block until write lock is taken or timeout has occurred.
+func (li *localLockInstance) GetLock(timeout *dynamicTimeout) (timedOutErr error) {
+	lockSource := getSource(2)
+	start := UTCNow()
 	readLock := false
-	li.ns.lock(li.volume, li.path, lockSource, li.opsID, readLock)
+	var success []int
+	for i, path := range li.paths {
+		if !li.ns.lock(li.ctx, li.volume, path, lockSource, li.opsID, readLock, timeout.Timeout()) {
+			timeout.LogFailure()
+			for _, sint := range success {
+				li.ns.unlock(li.volume, li.paths[sint], readLock)
+			}
+			return OperationTimedOut{}
+		}
+		success = append(success, i)
+	}
+	timeout.LogSuccess(UTCNow().Sub(start))
+	return
 }
 
 // Unlock - block until write lock is released.
-func (li *lockInstance) Unlock() {
+func (li *localLockInstance) Unlock() {
 	readLock := false
-	li.ns.unlock(li.volume, li.path, li.opsID, readLock)
+	for _, path := range li.paths {
+		li.ns.unlock(li.volume, path, readLock)
+	}
 }
 
-// RLock - block until read lock is taken.
-func (li *lockInstance) RLock() {
-	lockSource := getSource()
+// RLock - block until read lock is taken or timeout has occurred.
+func (li *localLockInstance) GetRLock(timeout *dynamicTimeout) (timedOutErr error) {
+	lockSource := getSource(2)
+	start := UTCNow()
 	readLock := true
-	li.ns.lock(li.volume, li.path, lockSource, li.opsID, readLock)
+	var success []int
+	for i, path := range li.paths {
+		if !li.ns.lock(li.ctx, li.volume, path, lockSource, li.opsID, readLock, timeout.Timeout()) {
+			timeout.LogFailure()
+			for _, sint := range success {
+				li.ns.unlock(li.volume, li.paths[sint], readLock)
+			}
+			return OperationTimedOut{}
+		}
+		success = append(success, i)
+	}
+	timeout.LogSuccess(UTCNow().Sub(start))
+	return
 }
 
 // RUnlock - block until read lock is released.
-func (li *lockInstance) RUnlock() {
+func (li *localLockInstance) RUnlock() {
 	readLock := true
-	li.ns.unlock(li.volume, li.path, li.opsID, readLock)
+	for _, path := range li.paths {
+		li.ns.unlock(li.volume, path, readLock)
+	}
+}
+
+func getSource(n int) string {
+	var funcName string
+	pc, filename, lineNum, ok := runtime.Caller(n)
+	if ok {
+		filename = pathutil.Base(filename)
+		funcName = strings.TrimPrefix(runtime.FuncForPC(pc).Name(),
+			"github.com/minio/minio/cmd.")
+	} else {
+		filename = "<unknown>"
+		lineNum = 0
+	}
+
+	return fmt.Sprintf("[%s:%d:%s()]", filename, lineNum, funcName)
 }

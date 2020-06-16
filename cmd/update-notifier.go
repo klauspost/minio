@@ -1,5 +1,5 @@
 /*
- * Minio Cloud Storage, (C) 2015, 2016, 2017 Minio, Inc.
+ * MinIO Cloud Storage, (C) 2015, 2016, 2017 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,12 +25,12 @@ import (
 
 	"github.com/cheggaaa/pb"
 	humanize "github.com/dustin/go-humanize"
-	"github.com/fatih/color"
+	"github.com/minio/minio/pkg/color"
 )
 
-// computeUpdateMessage - calculates the update message, only if a
+// prepareUpdateMessage - prepares the update message, only if a
 // newer version is available.
-func computeUpdateMessage(downloadURL string, older time.Duration) string {
+func prepareUpdateMessage(downloadURL string, older time.Duration) string {
 	if downloadURL == "" || older <= 0 {
 		return ""
 	}
@@ -46,11 +46,7 @@ func computeUpdateMessage(downloadURL string, older time.Duration) string {
 
 // colorizeUpdateMessage - inspired from Yeoman project npm package https://github.com/yeoman/update-notifier
 func colorizeUpdateMessage(updateString string, newerThan string) string {
-	// Initialize coloring.
-	cyan := color.New(color.FgCyan, color.Bold).SprintFunc()
-	yellow := color.New(color.FgYellow, color.Bold).SprintfFunc()
-
-	msgLine1Fmt := " You are running an older version of Minio released %s "
+	msgLine1Fmt := " You are running an older version of MinIO released %s "
 	msgLine2Fmt := " Update: %s "
 
 	// Calculate length *without* color coding: with ANSI terminal
@@ -59,8 +55,8 @@ func colorizeUpdateMessage(updateString string, newerThan string) string {
 	line2Length := len(fmt.Sprintf(msgLine2Fmt, updateString))
 
 	// Populate lines with color coding.
-	line1InColor := fmt.Sprintf(msgLine1Fmt, yellow(newerThan))
-	line2InColor := fmt.Sprintf(msgLine2Fmt, cyan(updateString))
+	line1InColor := fmt.Sprintf(msgLine1Fmt, color.YellowBold(newerThan))
+	line2InColor := fmt.Sprintf(msgLine2Fmt, color.CyanBold(updateString))
 
 	// calculate the rectangular box size.
 	maxContentWidth := int(math.Max(float64(line1Length), float64(line2Length)))
@@ -94,10 +90,10 @@ func colorizeUpdateMessage(updateString string, newerThan string) string {
 	}
 
 	lines := []string{
-		yellow(topLeftChar + strings.Repeat(horizBarChar, maxContentWidth) + topRightChar),
+		color.YellowBold(topLeftChar + strings.Repeat(horizBarChar, maxContentWidth) + topRightChar),
 		vertBarChar + line1InColor + strings.Repeat(" ", maxContentWidth-line1Length) + vertBarChar,
 		vertBarChar + line2InColor + strings.Repeat(" ", maxContentWidth-line2Length) + vertBarChar,
-		yellow(bottomLeftChar + strings.Repeat(horizBarChar, maxContentWidth) + bottomRightChar),
+		color.YellowBold(bottomLeftChar + strings.Repeat(horizBarChar, maxContentWidth) + bottomRightChar),
 	}
 	return "\n" + strings.Join(lines, "\n") + "\n"
 }

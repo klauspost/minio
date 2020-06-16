@@ -1,5 +1,5 @@
 /*
- * Minio Cloud Storage, (C) 2015 Minio, Inc.
+ * MinIO Cloud Storage, (C) 2018-2020 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,19 +19,16 @@ package disk
 // Info stat fs struct is container which holds following values
 // Total - total size of the volume / disk
 // Free - free size of the volume / disk
-// Type - file system type string
+// Files - total inodes available
+// Ffree - free inodes available
+// FSType - file system type
 type Info struct {
-	Total  int64
-	Free   int64
-	Files  int64
-	Ffree  int64
+	Total  uint64
+	Free   uint64
+	Files  uint64
+	Ffree  uint64
 	FSType string
-}
 
-func b2s(bs []int8) string {
-	b := make([]byte, len(bs))
-	for i, v := range bs {
-		b[i] = byte(v)
-	}
-	return string(b)
+	// Usage is calculated per tenant.
+	Usage uint64
 }

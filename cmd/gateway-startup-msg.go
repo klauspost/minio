@@ -1,5 +1,5 @@
 /*
- * Minio Cloud Storage, (C) 2016, 2017 Minio, Inc.
+ * MinIO Cloud Storage, (C) 2016, 2017 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,12 +19,18 @@ package cmd
 import (
 	"fmt"
 	"strings"
+
+	"github.com/minio/minio/pkg/color"
 )
 
 // Prints the formatted startup message.
-func printGatewayStartupMessage(apiEndPoints []string, backendType gatewayBackend) {
+func printGatewayStartupMessage(apiEndPoints []string, backendType string) {
 	strippedAPIEndpoints := stripStandardPorts(apiEndPoints)
-
+	// If cache layer is enabled, print cache capacity.
+	cacheAPI := newCachedObjectLayerFn()
+	if cacheAPI != nil {
+		printCacheStorageInfo(cacheAPI.StorageInfo(GlobalContext))
+	}
 	// Prints credential.
 	printGatewayCommonMsg(strippedAPIEndpoints)
 
@@ -37,22 +43,30 @@ func printGatewayStartupMessage(apiEndPoints []string, backendType gatewayBacken
 
 	// SSL is configured reads certification chain, prints
 	// authority and expiry.
-	if globalIsSSL {
-		printCertificateMsg(globalPublicCerts)
+	if color.IsTerminal() && !globalCLIContext.Anonymous {
+		if globalIsSSL {
+			printCertificateMsg(globalPublicCerts)
+		}
 	}
 }
 
 // Prints common server startup message. Prints credential, region and browser access.
 func printGatewayCommonMsg(apiEndpoints []string) {
 	// Get saved credentials.
-	cred := serverConfig.GetCredential()
+	cred := globalActiveCred
 
 	apiEndpointStr := strings.Join(apiEndpoints, "  ")
-	// Colorize the message and print.
-	log.Println(colorBlue("\nEndpoint: ") + colorBold(fmt.Sprintf(getFormatStr(len(apiEndpointStr), 1), apiEndpointStr)))
-	log.Println(colorBlue("AccessKey: ") + colorBold(fmt.Sprintf("%s ", cred.AccessKey)))
-	log.Println(colorBlue("SecretKey: ") + colorBold(fmt.Sprintf("%s ", cred.SecretKey)))
 
-	log.Println(colorBlue("\nBrowser Access:"))
-	log.Println(fmt.Sprintf(getFormatStr(len(apiEndpointStr), 3), apiEndpointStr))
+	// Colorize the message and print.
+	logStartupMessage(color.Blue("Endpoint: ") + color.Bold(fmt.Sprintf(getFormatStr(len(apiEndpointStr), 1), apiEndpointStr)))
+	if color.IsTerminal() && !globalCLIContext.Anonymous {
+		logStartupMessage(color.Blue("AccessKey: ") + color.Bold(fmt.Sprintf("%s ", cred.AccessKey)))
+		logStartupMessage(color.Blue("SecretKey: ") + color.Bold(fmt.Sprintf("%s ", cred.SecretKey)))
+	}
+	printEventNotifiers()
+
+	if globalBrowserEnabled {
+		logStartupMessage(color.Blue("\nBrowser Access:"))
+		logStartupMessage(fmt.Sprintf(getFormatStr(len(apiEndpointStr), 3), apiEndpointStr))
+	}
 }

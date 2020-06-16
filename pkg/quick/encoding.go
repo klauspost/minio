@@ -1,7 +1,7 @@
 /*
  * Quick - Quick key value store for config files and persistent state files
  *
- * Quick (C) 2017 Minio, Inc.
+ * Quick (C) 2017 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,14 +20,17 @@ package quick
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
-	os2 "github.com/minio/minio/pkg/x/os"
+	etcd "github.com/coreos/etcd/clientv3"
 	yaml "gopkg.in/yaml.v2"
 )
 
@@ -122,13 +125,60 @@ func saveFileConfig(filename string, v interface{}) error {
 
 }
 
+func saveFileConfigEtcd(filename string, clnt *etcd.Client, v interface{}) error {
+	// Fetch filename's extension
+	ext := filepath.Ext(filename)
+	// Marshal data
+	dataBytes, err := toMarshaller(ext)(v)
+	if err != nil {
+		return err
+	}
+	if runtime.GOOS == "windows" {
+		dataBytes = []byte(strings.Replace(string(dataBytes), "\n", "\r\n", -1))
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, err = clnt.Put(ctx, filename, string(dataBytes))
+	if err == context.DeadlineExceeded {
+		return fmt.Errorf("etcd setup is unreachable, please check your endpoints %s", clnt.Endpoints())
+	} else if err != nil {
+		return fmt.Errorf("unexpected error %w returned by etcd setup, please check your endpoints %s", err, clnt.Endpoints())
+	}
+	return nil
+}
+
+func loadFileConfigEtcd(filename string, clnt *etcd.Client, v interface{}) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := clnt.Get(ctx, filename)
+	if err != nil {
+		if err == context.DeadlineExceeded {
+			return fmt.Errorf("etcd setup is unreachable, please check your endpoints %s", clnt.Endpoints())
+		}
+		return fmt.Errorf("unexpected error %w returned by etcd setup, please check your endpoints %s", err, clnt.Endpoints())
+	}
+	if resp.Count == 0 {
+		return os.ErrNotExist
+	}
+
+	for _, ev := range resp.Kvs {
+		if string(ev.Key) == filename {
+			fileData := ev.Value
+			if runtime.GOOS == "windows" {
+				fileData = bytes.Replace(fileData, []byte("\r\n"), []byte("\n"), -1)
+			}
+			// Unmarshal file's content
+			return toUnmarshaller(filepath.Ext(filename))(fileData, v)
+		}
+	}
+	return os.ErrNotExist
+}
+
 // loadFileConfig unmarshals the file's content with the right
 // decoder format according to the filename extension. If no
 // extension is provided, json will be selected by default.
 func loadFileConfig(filename string, v interface{}) error {
-	if _, err := os2.Stat(filename); err != nil {
-		return err
-	}
 	fileData, err := ioutil.ReadFile(filename)
 	if err != nil {
 		return err
@@ -136,6 +186,7 @@ func loadFileConfig(filename string, v interface{}) error {
 	if runtime.GOOS == "windows" {
 		fileData = []byte(strings.Replace(string(fileData), "\r\n", "\n", -1))
 	}
+
 	// Unmarshal file's content
 	return toUnmarshaller(filepath.Ext(filename))(fileData, v)
 }

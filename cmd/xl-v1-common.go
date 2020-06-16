@@ -1,5 +1,5 @@
 /*
- * Minio Cloud Storage, (C) 2016, 2017 Minio, Inc.
+ * MinIO Cloud Storage, (C) 2016, 2017 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,28 +16,34 @@
 
 package cmd
 
-import "path"
+import (
+	"context"
+	"path"
+
+	"github.com/minio/minio/pkg/sync/errgroup"
+)
 
 // getLoadBalancedDisks - fetches load balanced (sufficiently randomized) disk slice.
-func (xl xlObjects) getLoadBalancedDisks() (disks []StorageAPI) {
+func (xl xlObjects) getLoadBalancedDisks() (newDisks []StorageAPI) {
+	disks := xl.getDisks()
 	// Based on the random shuffling return back randomized disks.
-	for _, i := range hashOrder(UTCNow().String(), len(xl.storageDisks)) {
-		disks = append(disks, xl.storageDisks[i-1])
+	for _, i := range hashOrder(UTCNow().String(), len(disks)) {
+		newDisks = append(newDisks, disks[i-1])
 	}
-	return disks
+	return newDisks
 }
 
 // This function does the following check, suppose
 // object is "a/b/c/d", stat makes sure that objects ""a/b/c""
 // "a/b" and "a" do not exist.
-func (xl xlObjects) parentDirIsObject(bucket, parent string) bool {
+func (xl xlObjects) parentDirIsObject(ctx context.Context, bucket, parent string) bool {
 	var isParentDirObject func(string) bool
 	isParentDirObject = func(p string) bool {
-		if p == "." {
+		if p == "." || p == SlashSeparator {
 			return false
 		}
 		if xl.isObject(bucket, p) {
-			// If there is already a file at prefix "p" return error.
+			// If there is already a file at prefix "p", return true.
 			return true
 		}
 		// Check if there is a file as one of the parent paths.
@@ -49,33 +55,33 @@ func (xl xlObjects) parentDirIsObject(bucket, parent string) bool {
 // isObject - returns `true` if the prefix is an object i.e if
 // `xl.json` exists at the leaf, false otherwise.
 func (xl xlObjects) isObject(bucket, prefix string) (ok bool) {
-	for _, disk := range xl.getLoadBalancedDisks() {
-		if disk == nil {
-			continue
-		}
-		// Check if 'prefix' is an object on this 'disk', else continue the check the next disk
-		_, err := disk.StatFile(bucket, path.Join(prefix, xlMetaJSONFile))
-		if err == nil {
-			return true
-		}
-		// Ignore for file not found,  disk not found or faulty disk.
-		if isErrIgnored(err, xlTreeWalkIgnoredErrs...) {
-			continue
-		}
-		errorIf(err, "Unable to stat a file %s/%s/%s", bucket, prefix, xlMetaJSONFile)
-	} // Exhausted all disks - return false.
-	return false
-}
+	storageDisks := xl.getDisks()
 
-// Calculate the space occupied by an object in a single disk
-func (xl xlObjects) sizeOnDisk(fileSize int64, blockSize int64, dataBlocks int) int64 {
-	numBlocks := fileSize / blockSize
-	chunkSize := getChunkSize(blockSize, dataBlocks)
-	sizeInDisk := numBlocks * chunkSize
-	remaining := fileSize % blockSize
-	if remaining > 0 {
-		sizeInDisk += getChunkSize(remaining, dataBlocks)
+	g := errgroup.WithNErrs(len(storageDisks))
+
+	for index := range storageDisks {
+		index := index
+		g.Go(func() error {
+			if storageDisks[index] == nil {
+				return errDiskNotFound
+			}
+			// Check if 'prefix' is an object on this 'disk', else continue the check the next disk
+			fi, err := storageDisks[index].StatFile(bucket, pathJoin(prefix, xlMetaJSONFile))
+			if err != nil {
+				return err
+			}
+			if fi.Size == 0 {
+				return errCorruptedFormat
+			}
+			return nil
+		}, index)
 	}
 
-	return sizeInDisk
+	// NOTE: Observe we are not trying to read `xl.json` and figure out the actual
+	// quorum intentionally, but rely on the default case scenario. Actual quorum
+	// verification will happen by top layer by using getObjectInfo() and will be
+	// ignored if necessary.
+	readQuorum := getReadQuorum(len(storageDisks))
+
+	return reduceReadQuorumErrs(GlobalContext, g.Wait(), objectOpIgnoredErrs, readQuorum) == nil
 }

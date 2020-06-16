@@ -1,5 +1,5 @@
 /*
- * Minio Cloud Storage, (C) 2015, 2016, 2017 Minio, Inc.
+ * MinIO Cloud Storage, (C) 2015, 2016, 2017 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,11 +18,17 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"time"
+
+	"github.com/minio/minio/cmd/crypto"
+	xhttp "github.com/minio/minio/cmd/http"
 )
 
 // Returns a hexadecimal representation of time at the
@@ -33,15 +39,16 @@ func mustGetRequestID(t time.Time) string {
 
 // Write http common headers
 func setCommonHeaders(w http.ResponseWriter) {
-	// Set unique request ID for each reply.
-	w.Header().Set(responseRequestIDKey, mustGetRequestID(UTCNow()))
-	w.Header().Set("Server", globalServerUserAgent)
+	w.Header().Set(xhttp.ServerInfo, "MinIO/"+ReleaseTag)
 	// Set `x-amz-bucket-region` only if region is set on the server
 	// by default minio uses an empty region.
-	if region := serverConfig.GetRegion(); region != "" {
-		w.Header().Set("X-Amz-Bucket-Region", region)
+	if region := globalServerRegion; region != "" {
+		w.Header().Set(xhttp.AmzBucketRegion, region)
 	}
-	w.Header().Set("Accept-Ranges", "bytes")
+	w.Header().Set(xhttp.AcceptRanges, "bytes")
+
+	// Remove sensitive information
+	crypto.RemoveSensitiveHeaders(w.Header())
 }
 
 // Encodes the response headers into XML format.
@@ -53,33 +60,97 @@ func encodeResponse(response interface{}) []byte {
 	return bytesBuffer.Bytes()
 }
 
+// Encodes the response headers into JSON format.
+func encodeResponseJSON(response interface{}) []byte {
+	var bytesBuffer bytes.Buffer
+	e := json.NewEncoder(&bytesBuffer)
+	e.Encode(response)
+	return bytesBuffer.Bytes()
+}
+
+// Write parts count
+func setPartsCountHeaders(w http.ResponseWriter, objInfo ObjectInfo) {
+	if strings.Contains(objInfo.ETag, "-") && len(objInfo.Parts) > 0 {
+		w.Header()[xhttp.AmzMpPartsCount] = []string{strconv.Itoa(len(objInfo.Parts))}
+	}
+}
+
 // Write object header
-func setObjectHeaders(w http.ResponseWriter, objInfo ObjectInfo, contentRange *httpRange) {
+func setObjectHeaders(w http.ResponseWriter, objInfo ObjectInfo, rs *HTTPRangeSpec) (err error) {
 	// set common headers
 	setCommonHeaders(w)
 
-	// Set content length.
-	w.Header().Set("Content-Length", strconv.FormatInt(objInfo.Size, 10))
-
 	// Set last modified time.
 	lastModified := objInfo.ModTime.UTC().Format(http.TimeFormat)
-	w.Header().Set("Last-Modified", lastModified)
+	w.Header().Set(xhttp.LastModified, lastModified)
 
 	// Set Etag if available.
 	if objInfo.ETag != "" {
-		w.Header().Set("ETag", "\""+objInfo.ETag+"\"")
+		w.Header()[xhttp.ETag] = []string{"\"" + objInfo.ETag + "\""}
+	}
+
+	if objInfo.ContentType != "" {
+		w.Header().Set(xhttp.ContentType, objInfo.ContentType)
+	}
+
+	if objInfo.ContentEncoding != "" {
+		w.Header().Set(xhttp.ContentEncoding, objInfo.ContentEncoding)
+	}
+
+	if !objInfo.Expires.IsZero() {
+		w.Header().Set(xhttp.Expires, objInfo.Expires.UTC().Format(http.TimeFormat))
+	}
+
+	if globalCacheConfig.Enabled {
+		w.Header().Set(xhttp.XCache, objInfo.CacheStatus.String())
+		w.Header().Set(xhttp.XCacheLookup, objInfo.CacheLookupStatus.String())
+	}
+
+	// Set tag count if object has tags
+	tags, _ := url.ParseQuery(objInfo.UserTags)
+	tagCount := len(tags)
+	if tagCount > 0 {
+		w.Header()[xhttp.AmzTagCount] = []string{strconv.Itoa(tagCount)}
 	}
 
 	// Set all other user defined metadata.
 	for k, v := range objInfo.UserDefined {
-		w.Header().Set(k, v)
+		if strings.HasPrefix(strings.ToLower(k), ReservedMetadataPrefixLower) {
+			// Do not need to send any internal metadata
+			// values to client.
+			continue
+		}
+		var isSet bool
+		for _, userMetadataPrefix := range userMetadataKeyPrefixes {
+			if !strings.HasPrefix(k, userMetadataPrefix) {
+				continue
+			}
+			w.Header()[strings.ToLower(k)] = []string{v}
+			isSet = true
+			break
+		}
+		if !isSet {
+			w.Header().Set(k, v)
+		}
+	}
+
+	totalObjectSize, err := objInfo.GetActualSize()
+	if err != nil {
+		return err
 	}
 
 	// for providing ranged content
-	if contentRange != nil && contentRange.offsetBegin > -1 {
-		// Override content-length
-		w.Header().Set("Content-Length", strconv.FormatInt(contentRange.getLength(), 10))
-		w.Header().Set("Content-Range", contentRange.String())
-		w.WriteHeader(http.StatusPartialContent)
+	start, rangeLen, err := rs.GetOffsetLength(totalObjectSize)
+	if err != nil {
+		return err
 	}
+
+	// Set content length.
+	w.Header().Set(xhttp.ContentLength, strconv.FormatInt(rangeLen, 10))
+	if rs != nil {
+		contentRange := fmt.Sprintf("bytes %d-%d/%d", start, start+rangeLen-1, totalObjectSize)
+		w.Header().Set(xhttp.ContentRange, contentRange)
+	}
+
+	return nil
 }

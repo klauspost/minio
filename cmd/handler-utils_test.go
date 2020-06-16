@@ -1,5 +1,5 @@
 /*
- * Minio Cloud Storage, (C) 2015, 2016, 2017 Minio, Inc.
+ * MinIO Cloud Storage, (C) 2015, 2016, 2017 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,64 +18,73 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/xml"
 	"io/ioutil"
 	"net/http"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/minio/minio/cmd/config"
 )
 
 // Tests validate bucket LocationConstraint.
 func TestIsValidLocationContraint(t *testing.T) {
-	path, err := newTestConfig(globalMinioDefaultRegion)
+	obj, fsDir, err := prepareFS()
 	if err != nil {
-		t.Fatalf("unable initialize config file, %s", err)
+		t.Fatal(err)
 	}
-	defer removeAll(path)
+	defer os.RemoveAll(fsDir)
+	if err = newTestConfig(globalMinioDefaultRegion, obj); err != nil {
+		t.Fatal(err)
+	}
 
-	// Test with corrupted XML
+	// Corrupted XML
 	malformedReq := &http.Request{
 		Body:          ioutil.NopCloser(bytes.NewBuffer([]byte("<>"))),
 		ContentLength: int64(len("<>")),
 	}
-	if _, err := parseLocationConstraint(malformedReq); err != ErrMalformedXML {
-		t.Fatal("Unexpected error: ", err)
+
+	// Not an XML
+	badRequest := &http.Request{
+		Body:          ioutil.NopCloser(bytes.NewReader([]byte("garbage"))),
+		ContentLength: int64(len("garbage")),
 	}
 
 	// generates the input request with XML bucket configuration set to the request body.
-	createExpectedRequest := func(req *http.Request, location string) (*http.Request, error) {
+	createExpectedRequest := func(req *http.Request, location string) *http.Request {
 		createBucketConfig := createBucketLocationConfiguration{}
 		createBucketConfig.Location = location
-		var createBucketConfigBytes []byte
-		createBucketConfigBytes, e := xml.Marshal(createBucketConfig)
-		if e != nil {
-			return nil, e
-		}
+		createBucketConfigBytes, _ := xml.Marshal(createBucketConfig)
 		createBucketConfigBuffer := bytes.NewBuffer(createBucketConfigBytes)
 		req.Body = ioutil.NopCloser(createBucketConfigBuffer)
 		req.ContentLength = int64(createBucketConfigBuffer.Len())
-		return req, nil
+		return req
 	}
 
 	testCases := []struct {
-		locationForInputRequest string
-		serverConfigRegion      string
-		expectedCode            APIErrorCode
+		request            *http.Request
+		serverConfigRegion string
+		expectedCode       APIErrorCode
 	}{
 		// Test case - 1.
-		{globalMinioDefaultRegion, globalMinioDefaultRegion, ErrNone},
+		{createExpectedRequest(&http.Request{}, "eu-central-1"), globalMinioDefaultRegion, ErrNone},
 		// Test case - 2.
 		// In case of empty request body ErrNone is returned.
-		{"", globalMinioDefaultRegion, ErrNone},
+		{createExpectedRequest(&http.Request{}, ""), globalMinioDefaultRegion, ErrNone},
+		// Test case - 3
+		// In case of garbage request body ErrMalformedXML is returned.
+		{badRequest, globalMinioDefaultRegion, ErrMalformedXML},
+		// Test case - 4
+		// In case of invalid XML request body ErrMalformedXML is returned.
+		{malformedReq, globalMinioDefaultRegion, ErrMalformedXML},
 	}
+
 	for i, testCase := range testCases {
-		inputRequest, e := createExpectedRequest(&http.Request{}, testCase.locationForInputRequest)
-		if e != nil {
-			t.Fatalf("Test %d: Failed to Marshal bucket configuration", i+1)
-		}
-		serverConfig.SetRegion(testCase.serverConfigRegion)
-		_, actualCode := parseLocationConstraint(inputRequest)
+		config.SetRegion(globalServerConfig, testCase.serverConfigRegion)
+		_, actualCode := parseLocationConstraint(testCase.request)
 		if testCase.expectedCode != actualCode {
 			t.Errorf("Test %d: Expected the APIErrCode to be %d, but instead found %d", i+1, testCase.expectedCode, actualCode)
 		}
@@ -111,9 +120,9 @@ func TestValidateFormFieldSize(t *testing.T) {
 
 	// Run validate form field size check under all test cases.
 	for i, testCase := range testCases {
-		err := validateFormFieldSize(testCase.header)
+		err := validateFormFieldSize(context.Background(), testCase.header)
 		if err != nil {
-			if errorCause(err).Error() != testCase.err.Error() {
+			if err.Error() != testCase.err.Error() {
 				t.Errorf("Test %d: Expected error %s, got %s", i+1, testCase.err, err)
 			}
 		}
@@ -163,9 +172,19 @@ func TestExtractMetadataHeaders(t *testing.T) {
 				"x-amz-meta-appid": []string{"amz-meta"},
 			},
 			metadata: map[string]string{
-				"X-Amz-Meta-Appid": "amz-meta",
+				"x-amz-meta-appid": "amz-meta",
 			},
-			shouldFail: true,
+			shouldFail: false,
+		},
+		// Support multiple values
+		{
+			header: http.Header{
+				"x-amz-meta-key": []string{"amz-meta1", "amz-meta2"},
+			},
+			metadata: map[string]string{
+				"x-amz-meta-key": "amz-meta1,amz-meta2",
+			},
+			shouldFail: false,
 		},
 		// Empty header input returns empty metadata.
 		{
@@ -177,7 +196,8 @@ func TestExtractMetadataHeaders(t *testing.T) {
 
 	// Validate if the extracting headers.
 	for i, testCase := range testCases {
-		metadata, err := extractMetadataFromHeader(testCase.header)
+		metadata := make(map[string]string)
+		err := extractMetadataFromMap(context.Background(), testCase.header, metadata)
 		if err != nil && !testCase.shouldFail {
 			t.Fatalf("Test %d failed to extract metadata: %v", i+1, err)
 		}
@@ -186,6 +206,29 @@ func TestExtractMetadataHeaders(t *testing.T) {
 		}
 		if err == nil && !reflect.DeepEqual(metadata, testCase.metadata) {
 			t.Fatalf("Test %d failed: Expected \"%#v\", got \"%#v\"", i+1, testCase.metadata, metadata)
+		}
+	}
+}
+
+// Test getResource()
+func TestGetResource(t *testing.T) {
+	testCases := []struct {
+		p                string
+		host             string
+		domains          []string
+		expectedResource string
+	}{
+		{"/a/b/c", "test.mydomain.com", []string{"mydomain.com"}, "/test/a/b/c"},
+		{"/a/b/c", "test.mydomain.com", []string{"notmydomain.com"}, "/a/b/c"},
+		{"/a/b/c", "test.mydomain.com", nil, "/a/b/c"},
+	}
+	for i, test := range testCases {
+		gotResource, err := getResource(test.p, test.host, test.domains)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if gotResource != test.expectedResource {
+			t.Fatalf("test %d: expected %s got %s", i+1, test.expectedResource, gotResource)
 		}
 	}
 }

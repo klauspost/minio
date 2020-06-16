@@ -1,9 +1,8 @@
-# Minio Gateway [![Slack](https://slack.minio.io/slack?type=svg)](https://slack.minio.io)
-Minio Gateway adds Amazon S3 compatibility to third party cloud storage providers.
+# MinIO Gateway [![Slack](https://slack.min.io/slack?type=svg)](https://slack.min.io)
+MinIO Gateway adds Amazon S3 compatibility to third party cloud storage providers.
+- [NAS](https://github.com/minio/minio/blob/master/docs/gateway/nas.md)
 - [Microsoft Azure Blob Storage](https://github.com/minio/minio/blob/master/docs/gateway/azure.md)
-- [Google Cloud Storage](https://github.com/minio/minio/blob/master/docs/gateway/gcs.md) _Alpha release_
-
-## Roadmap
-* Minio & AWS S3
-* Edge Caching - Disk based proxy caching support
+- [HDFS](https://github.com/minio/minio/blob/master/docs/gateway/hdfs.md)
+- [S3](https://github.com/minio/minio/blob/master/docs/gateway/s3.md)
+- [Google Cloud Storage](https://github.com/minio/minio/blob/master/docs/gateway/gcs.md)
 
