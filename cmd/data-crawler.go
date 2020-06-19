@@ -23,6 +23,7 @@ import (
 	"errors"
 	"os"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -490,6 +491,7 @@ type crawlItem struct {
 	prefix     string // Only the prefix if any, does not have final object name.
 	objectName string // Only the object name without prefixes.
 	lifeCycle  *lifecycle.Lifecycle
+	quota      *quotaCollector
 	debug      bool
 }
 
@@ -518,11 +520,14 @@ type actionMeta struct {
 // The metadata will be compared to consensus on the object layer before any changes are applied.
 // If no metadata is supplied, -1 is returned if no action is taken.
 func (i *crawlItem) applyActions(ctx context.Context, o ObjectLayer, meta actionMeta) (size int64) {
-	size, err := meta.oi.GetActualSize()
+	var err error
+	size, err = meta.oi.GetActualSize()
 	if i.debug {
 		logger.LogIf(ctx, err)
 	}
+
 	if i.lifeCycle == nil {
+		i.addQuota(ctx, meta, size)
 		return size
 	}
 
@@ -543,6 +548,7 @@ func (i *crawlItem) applyActions(ctx context.Context, o ObjectLayer, meta action
 	case lifecycle.DeleteAction:
 	default:
 		// No action.
+		i.addQuota(ctx, meta, size)
 		return size
 	}
 
@@ -558,6 +564,7 @@ func (i *crawlItem) applyActions(ctx context.Context, o ObjectLayer, meta action
 				if !obj.DeleteMarker { // if this is not a delete marker log and return
 					// Do nothing - heal in the future.
 					logger.LogIf(ctx, err)
+					i.addQuota(ctx, meta, size)
 					return size
 				}
 			case ObjectNotFound:
@@ -565,6 +572,7 @@ func (i *crawlItem) applyActions(ctx context.Context, o ObjectLayer, meta action
 				return 0
 			default:
 				// All other errors proceed.
+				i.addQuota(ctx, meta, size)
 				logger.LogIf(ctx, err)
 				return size
 			}
@@ -589,6 +597,7 @@ func (i *crawlItem) applyActions(ctx context.Context, o ObjectLayer, meta action
 		case lifecycle.DeleteAction:
 		default:
 			// No action.
+			i.addQuota(ctx, meta, size)
 			return size
 		}
 	}
@@ -597,6 +606,7 @@ func (i *crawlItem) applyActions(ctx context.Context, o ObjectLayer, meta action
 	if err != nil {
 		// Assume it is still there.
 		logger.LogIf(ctx, err)
+		i.addQuota(ctx, meta, size)
 		return size
 	}
 
@@ -610,7 +620,60 @@ func (i *crawlItem) applyActions(ctx context.Context, o ObjectLayer, meta action
 	return 0
 }
 
-// objectPath returns the prefix and object name.
+// quotaListLimit is the maximum number of objects that can be deleted in a single round.
+const quotaListLimit = 250000
+
+// To keep the list size reasonable we trim the newest quotaListLimitTrimN when we reach
+// quotaListLimit. This means we are guaranteed to delete at least
+// quotaListLimit - quotaListLimitTrimN on objects on each round.
+const quotaListLimitTrimN = 10000
+
+type quotaCollector struct {
+	items []quotaCollectorItem
+	// If not 0, this will contain the timestamp of the newest object that has been trimmed.
+	// For strict FIFO no objects newer than this should be deleted.
+	newestTrimmed int64
+}
+
+type quotaCollectorItem struct {
+	objPath   string
+	versionID string
+	size      int64
+	lastMod   int64
+}
+
+// addQuota should be called with any existing file to potentially delete it.
+func (i *crawlItem) addQuota(ctx context.Context, meta actionMeta, size int64) {
+	if i.quota == nil {
+		return
+	}
+	i.quota.items = append(i.quota.items, quotaCollectorItem{
+		objPath:   i.objectPath(),
+		versionID: meta.oi.VersionID,
+		size:      size,
+		lastMod:   meta.oi.ModTime.UnixNano(),
+	})
+	if len(i.quota.items) >= quotaListLimit {
+		// We reached the limit, trim newest quotaListLimitTrimN entries.
+		i.quota.sortDate()
+		newest := i.quota.items[quotaListLimit-quotaListLimitTrimN]
+		// Keep oldest items.
+		i.quota.items = i.quota.items[:quotaListLimit-quotaListLimitTrimN]
+		if i.quota.newestTrimmed < newest.lastMod {
+			i.quota.newestTrimmed = newest.lastMod
+		}
+	}
+}
+
+// sortDate will sort the entries
+func (q *quotaCollector) sortDate() {
+	items := q.items
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].lastMod < items[j].lastMod
+	})
+}
+
+// objectPath returns the prefix and object name WITHOUT bucket.
 func (i *crawlItem) objectPath() string {
 	return path.Join(i.prefix, i.objectName)
 }
