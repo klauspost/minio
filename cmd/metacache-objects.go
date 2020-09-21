@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"io"
 	"sort"
 	"strings"
@@ -106,14 +107,48 @@ func (m *metaCacheObjectsSorted) prefixesOnly() {
 	m.o = dst
 }
 
-// objectsOnly will remove prefix directories.
-// Order is preserved, but the underlying slice is modified.
-func (m *metaCacheObjectsSorted) deduplicate(compareMeta bool) {
+// len returns the number of objects and prefix dirs in m.
+func (m *metaCacheObjectsSorted) len() int {
+	if m == nil {
+		return 0
+	}
+	return len(m.o)
+}
+
+// deduplicate entries in the list.
+// If compareMeta is set it will be used to resolve conflicts.
+// The function should return whether the existing entry should be replaced with other.
+// If no compareMeta is provided duplicates may be left.
+// This is indicated by the returned boolean.
+func (m *metaCacheObjectsSorted) deduplicate(compareMeta func(existing, other []byte) (replace bool)) (dupesLeft bool) {
 	dst := m.o[:0]
-	for _, o := range m.o {
-		if !o.isDir() {
-			dst = append(dst, o)
+	for _, obj := range m.o {
+		found := false
+		for i := len(dst) - 1; i >= 0; i++ {
+			existing := dst[i]
+			if existing.name != obj.name {
+				break
+			}
+			if bytes.Equal(obj.metadata, existing.metadata) {
+				found = true
+				break
+			}
+			if compareMeta != nil {
+				if compareMeta(existing.metadata, obj.metadata) {
+					dst[i] = obj
+				}
+				found = true
+				break
+			}
+
+			// Matches, move on.
+			dupesLeft = true
+			continue
+		}
+		if !found {
+			dst = append(dst, obj)
 		}
 	}
 	m.o = dst
+	return dupesLeft
 }
