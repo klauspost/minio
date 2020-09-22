@@ -16,13 +16,15 @@ var s2EncPool = sync.Pool{New: func() interface{} {
 	return s2.NewWriter(nil)
 }}
 
+// metacacheWriter provides a serializer of metacache objects.
 type metacacheWriter struct {
 	mw      *msgp.Writer
 	creator func() error
 	closer  func() error
 }
 
-func newMetacacheStream(out io.Writer) *metacacheWriter {
+// newMetacacheWriter will create a serializer that will write objects in given order to the output.
+func newMetacacheWriter(out io.Writer) *metacacheWriter {
 	w := metacacheWriter{
 		mw: nil,
 	}
@@ -79,7 +81,7 @@ func newMetacacheFile(file string) *metacacheWriter {
 // write one or more objects to the stream in order.
 // It is favorable to send as many objects as possible in a single write,
 // but no more than math.MaxUint32
-func (w *metacacheWriter) write(objs ...metaCacheObject) error {
+func (w *metacacheWriter) write(objs ...metaCacheEntry) error {
 	if w == nil {
 		return errors.New("metacacheWriter: nil writer")
 	}
@@ -113,6 +115,7 @@ func (w *metacacheWriter) write(objs ...metaCacheObject) error {
 	return nil
 }
 
+// Close and release resources.
 func (w *metacacheWriter) Close() error {
 	if w == nil || w.closer == nil {
 		return nil
@@ -122,12 +125,14 @@ func (w *metacacheWriter) Close() error {
 	return err
 }
 
+// metacacheReader allows reading a cache stream.
 type metacacheReader struct {
 	mr      *msgp.Reader
-	current metaCacheObject
+	current metaCacheEntry
 	closer  func()
 }
 
+// newMetacacheReader creates a new cache reader.
 func newMetacacheReader(r io.Reader) *metacacheReader {
 	mr := msgp.NewReader(s2.NewReader(r))
 	m := metacacheReader{
@@ -139,38 +144,39 @@ func newMetacacheReader(r io.Reader) *metacacheReader {
 }
 
 // peek will return the name of the next object.
+// Will return io.EOF if there are no more objects.
 // Should be used sparingly.
-func (w *metacacheReader) peek() (string, error) {
-	if w.current.name != "" {
-		return w.current.name, nil
+func (r *metacacheReader) peek() (string, error) {
+	if r.current.name != "" {
+		return r.current.name, nil
 	}
 	var err error
-	if w.current.name, err = w.mr.ReadString(); err != nil {
+	if r.current.name, err = r.mr.ReadString(); err != nil {
 		return "", err
 	}
-	w.current.metadata, err = w.mr.ReadBytes(w.current.metadata[:0])
+	r.current.metadata, err = r.mr.ReadBytes(r.current.metadata[:0])
 	if err == io.EOF {
 		err = io.ErrUnexpectedEOF
 	}
-	return w.current.name, err
+	return r.current.name, err
 }
 
 // next will read one entry from the stream.
 // Generally not recommended for fast operation.
-func (w *metacacheReader) next() (metaCacheObject, error) {
-	var m metaCacheObject
+func (r *metacacheReader) next() (metaCacheEntry, error) {
+	var m metaCacheEntry
 	var err error
-	if w.current.name != "" {
-		m.name = w.current.name
-		m.metadata = w.current.metadata
-		w.current.name = ""
-		w.current.metadata = nil
+	if r.current.name != "" {
+		m.name = r.current.name
+		m.metadata = r.current.metadata
+		r.current.name = ""
+		r.current.metadata = nil
 		return m, nil
 	}
-	if m.name, err = w.mr.ReadString(); err != nil {
+	if m.name, err = r.mr.ReadString(); err != nil {
 		return m, err
 	}
-	m.metadata, err = w.mr.ReadBytes(nil)
+	m.metadata, err = r.mr.ReadBytes(nil)
 	if err == io.EOF {
 		err = io.ErrUnexpectedEOF
 	}
@@ -180,7 +186,7 @@ func (w *metacacheReader) next() (metaCacheObject, error) {
 
 // forwardTo will forward to the first entry that is >= s.
 // Will return io.EOF if end of stream is reached without finding any.
-func (w *metacacheReader) forwardTo(s string) error {
+func (r *metacacheReader) forwardTo(s string) error {
 	if s == "" {
 		return nil
 	}
@@ -188,7 +194,7 @@ func (w *metacacheReader) forwardTo(s string) error {
 	var tmp = make([]byte, 0, 256)
 	for {
 		// Read name without allocating more than 1 buffer.
-		sz, err := w.mr.ReadStringHeader()
+		sz, err := r.mr.ReadStringHeader()
 		if err != nil {
 			return err
 		}
@@ -196,17 +202,17 @@ func (w *metacacheReader) forwardTo(s string) error {
 			tmp = make([]byte, 0, sz+256)
 		}
 		tmp = tmp[:sz]
-		_, err = w.mr.R.ReadFull(tmp)
+		_, err = r.mr.R.ReadFull(tmp)
 		if err != nil {
 			return err
 		}
 		if string(tmp) >= s {
-			w.current.name = string(tmp)
-			w.current.metadata, err = w.mr.ReadBytes(nil)
+			r.current.name = string(tmp)
+			r.current.metadata, err = r.mr.ReadBytes(nil)
 			return err
 		}
 		// Skip metadata
-		err = w.mr.Skip()
+		err = r.mr.Skip()
 		if err != nil {
 			if err == io.EOF {
 				err = io.ErrUnexpectedEOF
@@ -216,57 +222,64 @@ func (w *metacacheReader) forwardTo(s string) error {
 	}
 }
 
-func (w *metacacheReader) readN(n int) (metaCacheObjectsSorted, error) {
-	if n <= 0 {
-		return metaCacheObjectsSorted{}, nil
+// readNames will return all the requested number of names in order
+// or all if n < 0.
+// Will return io.EOF if end of stream is reached.
+// If requesting 0 objects nil error will always be returned regardless of at end of stream.
+func (r *metacacheReader) readN(n int) (metaCacheEntriesSorted, error) {
+	if n == 0 {
+		return metaCacheEntriesSorted{}, nil
 	}
-	res := make(metaCacheObjects, 0, n)
-	if w.current.name != "" {
-		res = append(res, w.current)
-		w.current.name = ""
-		w.current.metadata = nil
+	var res metaCacheEntries
+	if n > 0 {
+		res = make(metaCacheEntries, 0, n)
 	}
-	for len(res) < n {
+	if r.current.name != "" {
+		res = append(res, r.current)
+		r.current.name = ""
+		r.current.metadata = nil
+	}
+	for n < 0 || len(res) < n {
 		var err error
-		var meta metaCacheObject
-		if meta.name, err = w.mr.ReadString(); err != nil {
-			return metaCacheObjectsSorted{o: res}, err
+		var meta metaCacheEntry
+		if meta.name, err = r.mr.ReadString(); err != nil {
+			return metaCacheEntriesSorted{o: res}, err
 		}
-		if meta.metadata, err = w.mr.ReadBytes(nil); err != nil {
+		if meta.metadata, err = r.mr.ReadBytes(nil); err != nil {
 			if err == io.EOF {
 				err = io.ErrUnexpectedEOF
 			}
-			return metaCacheObjectsSorted{o: res}, err
+			return metaCacheEntriesSorted{o: res}, err
 		}
 		res = append(res, meta)
 	}
-	return metaCacheObjectsSorted{o: res}, nil
+	return metaCacheEntriesSorted{o: res}, nil
 }
 
 // readAll will return all remaining objects on the dst channel and close it when done.
 // The context allows the operation to be cancelled.
-func (w *metacacheReader) readAll(ctx context.Context, dst chan<- metaCacheObject) error {
+func (r *metacacheReader) readAll(ctx context.Context, dst chan<- metaCacheEntry) error {
 	defer close(dst)
-	if w.current.name != "" {
+	if r.current.name != "" {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case dst <- w.current:
+		case dst <- r.current:
 
 		}
-		w.current.name = ""
-		w.current.metadata = nil
+		r.current.name = ""
+		r.current.metadata = nil
 	}
 	for {
 		var err error
-		var meta metaCacheObject
-		if meta.name, err = w.mr.ReadString(); err != nil {
+		var meta metaCacheEntry
+		if meta.name, err = r.mr.ReadString(); err != nil {
 			if err == io.EOF {
 				break
 			}
 			return err
 		}
-		if meta.metadata, err = w.mr.ReadBytes(nil); err != nil {
+		if meta.metadata, err = r.mr.ReadBytes(nil); err != nil {
 			if err == io.EOF {
 				err = io.ErrUnexpectedEOF
 			}
@@ -281,10 +294,44 @@ func (w *metacacheReader) readAll(ctx context.Context, dst chan<- metaCacheObjec
 	return nil
 }
 
+// readFn will return all remaining objects
+// and provide a callback for each entry read in order.
+// The context allows the operation to be cancelled.
+func (r *metacacheReader) readFn(ctx context.Context, fn func(entry metaCacheEntry)) error {
+	if r.current.name != "" {
+		fn(r.current)
+		r.current.name = ""
+		r.current.metadata = nil
+	}
+	for {
+		var err error
+		var meta metaCacheEntry
+		if meta.name, err = r.mr.ReadString(); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return err
+		}
+		if meta.metadata, err = r.mr.ReadBytes(nil); err != nil {
+			if err == io.EOF {
+				err = io.ErrUnexpectedEOF
+			}
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			fn(meta)
+		}
+	}
+	return nil
+}
+
 // readNames will return all the requested number of names in order
 // or all if n < 0.
 // Will return io.EOF if end of stream is reached.
-func (w *metacacheReader) readNames(n int) ([]string, error) {
+func (r *metacacheReader) readNames(n int) ([]string, error) {
 	if n == 0 {
 		return nil, nil
 	}
@@ -292,18 +339,18 @@ func (w *metacacheReader) readNames(n int) ([]string, error) {
 	if n > 0 {
 		res = make([]string, 0, n)
 	}
-	if w.current.name != "" {
-		res = append(res, w.current.name)
-		w.current.name = ""
-		w.current.metadata = nil
+	if r.current.name != "" {
+		res = append(res, r.current.name)
+		r.current.name = ""
+		r.current.metadata = nil
 	}
 	for n < 0 || len(res) < n {
 		var err error
 		var name string
-		if name, err = w.mr.ReadString(); err != nil {
-			return nil, err
+		if name, err = r.mr.ReadString(); err != nil {
+			return res, err
 		}
-		if err = w.mr.Skip(); err != nil {
+		if err = r.mr.Skip(); err != nil {
 			if err == io.EOF {
 				err = io.ErrUnexpectedEOF
 			}
@@ -314,11 +361,12 @@ func (w *metacacheReader) readNames(n int) ([]string, error) {
 	return res, nil
 }
 
-func (w *metacacheReader) Close() error {
-	if w == nil || w.closer == nil {
+// Close and release resources.
+func (r *metacacheReader) Close() error {
+	if r == nil || r.closer == nil {
 		return nil
 	}
-	w.closer()
-	w.closer = nil
+	r.closer()
+	r.closer = nil
 	return nil
 }

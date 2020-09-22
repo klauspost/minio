@@ -10,7 +10,7 @@ import (
 	"github.com/minio/minio/cmd/logger"
 )
 
-func (s *xlStorage) WalkDir(ctx context.Context, bucket, dirPath string, recursive bool) (metaCacheObjects, error) {
+func (s *xlStorage) WalkDir(ctx context.Context, bucket, dirPath string, recursive bool) (metaCacheEntries, error) {
 	atomic.AddInt32(&s.activeIOCount, 1)
 	defer func() {
 		atomic.AddInt32(&s.activeIOCount, -1)
@@ -42,7 +42,7 @@ func (s *xlStorage) WalkDir(ctx context.Context, bucket, dirPath string, recursi
 	}
 
 	scanDirs := []string{dirPath}
-	var res metaCacheObjects
+	var res metaCacheEntries
 	for len(scanDirs) > 0 {
 		current := scanDirs[0]
 
@@ -66,11 +66,11 @@ func (s *xlStorage) WalkDir(ctx context.Context, bucket, dirPath string, recursi
 
 		// Pre-alloc what we know we will need
 		if len(res) == 0 {
-			res = make(metaCacheObjects, 0, len(entries))
+			res = make(metaCacheEntries, 0, len(entries))
 		}
 		for _, entry := range entries {
 			// All objects will be returned as directories, there has been no object check yet.
-			meta := metaCacheObject{name: PathJoin(current, entry)}
+			meta := metaCacheEntry{name: PathJoin(current, entry)}
 			if HasSuffix(meta.name, SlashSeparator) {
 				meta.metadata, err = ioutil.ReadFile(pathJoin(volumeDir, meta.name, xlStorageFormatFile))
 				switch {
