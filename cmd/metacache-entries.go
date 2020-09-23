@@ -133,6 +133,17 @@ func (m *metaCacheEntriesSorted) merge(other metaCacheEntriesSorted) {
 	m.o = merged
 }
 
+// filter allows selective filtering with the provided function.
+func (m *metaCacheEntriesSorted) filter(fn func(entry *metaCacheEntry) bool) {
+	dst := m.o[:0]
+	for _, o := range m.o {
+		if fn(&o) {
+			dst = append(dst, o)
+		}
+	}
+	m.o = dst
+}
+
 // filterPrefix will filter m to only contain entries with the specified prefix.
 func (m *metaCacheEntriesSorted) filterPrefix(s string) {
 	if s == "" {
@@ -147,9 +158,9 @@ func (m *metaCacheEntriesSorted) filterPrefix(s string) {
 	}
 }
 
-// objectsOnly will remove prefix directories.
+// filterObjectsOnly will remove prefix directories.
 // Order is preserved, but the underlying slice is modified.
-func (m *metaCacheEntriesSorted) objectsOnly() {
+func (m *metaCacheEntriesSorted) filterObjectsOnly() {
 	dst := m.o[:0]
 	for _, o := range m.o {
 		if !o.isDir() {
@@ -159,13 +170,40 @@ func (m *metaCacheEntriesSorted) objectsOnly() {
 	m.o = dst
 }
 
-// objectsOnly will remove prefix directories.
+// filterPrefixesOnly will remove objects.
 // Order is preserved, but the underlying slice is modified.
-func (m *metaCacheEntriesSorted) prefixesOnly() {
+func (m *metaCacheEntriesSorted) filterPrefixesOnly() {
 	dst := m.o[:0]
 	for _, o := range m.o {
 		if o.isDir() {
 			dst = append(dst, o)
+		}
+	}
+	m.o = dst
+}
+
+// filterRecursiveEntries will keep entries only with the prefix that doesn't contain separator.
+// This can be used to remove recursive listings.
+// To return root elements only set prefix to an empty string.
+// Order is preserved, but the underlying slice is modified.
+func (m *metaCacheEntriesSorted) filterRecursiveEntries(prefix, separator string) {
+	dst := m.o[:0]
+	if prefix != "" {
+		m.forwardTo(prefix)
+		for _, o := range m.o {
+			ext := strings.TrimPrefix(o.name, prefix)
+			if len(ext) != len(o.name) {
+				if !strings.Contains(ext, separator) {
+					dst = append(dst, o)
+				}
+			}
+		}
+	} else {
+		// No prefix, simpler
+		for _, o := range m.o {
+			if !strings.Contains(o.name, separator) {
+				dst = append(dst, o)
+			}
 		}
 	}
 	m.o = dst

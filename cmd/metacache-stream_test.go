@@ -228,3 +228,33 @@ func Test_newMetacacheStream(t *testing.T) {
 		t.Errorf("got unexpected result: %#v", names)
 	}
 }
+
+func Test_metacacheReader_skip(t *testing.T) {
+	r := loadMetacacheSample(t)
+	defer r.Close()
+	names, err := r.readNames(5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := loadMetacacheSampleNames[:5]
+	if !reflect.DeepEqual(names, want) {
+		t.Errorf("got unexpected result: %#v", names)
+	}
+	err = r.skip(5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names, err = r.readNames(5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = loadMetacacheSampleNames[10:15]
+	if !reflect.DeepEqual(names, want) {
+		t.Errorf("got unexpected result: %#v", names)
+	}
+
+	err = r.skip(len(loadMetacacheSampleNames))
+	if err != io.EOF {
+		t.Fatal(err)
+	}
+}

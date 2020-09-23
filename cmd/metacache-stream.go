@@ -125,6 +125,10 @@ func (w *metacacheWriter) Close() error {
 	return err
 }
 
+var s2DecPool = sync.Pool{New: func() interface{} {
+	return s2.NewReader(nil)
+}}
+
 // metacacheReader allows reading a cache stream.
 type metacacheReader struct {
 	mr      *msgp.Reader
@@ -134,10 +138,14 @@ type metacacheReader struct {
 
 // newMetacacheReader creates a new cache reader.
 func newMetacacheReader(r io.Reader) *metacacheReader {
-	mr := msgp.NewReader(s2.NewReader(r))
+	dec := s2DecPool.Get().(*s2.Reader)
+	dec.Reset(r)
+	mr := msgp.NewReader(dec)
 	m := metacacheReader{
 		mr: mr,
 		closer: func() {
+			dec.Reset(nil)
+			s2DecPool.Put(dec)
 		},
 	}
 	return &m
@@ -359,6 +367,32 @@ func (r *metacacheReader) readNames(n int) ([]string, error) {
 		res = append(res, name)
 	}
 	return res, nil
+}
+
+// skip n entries on the input stream.
+// If there are less entries left io.EOF is returned.
+func (r *metacacheReader) skip(n int) error {
+	if n <= 0 {
+		return nil
+	}
+	if r.current.name != "" {
+		n--
+		r.current.name = ""
+		r.current.metadata = nil
+	}
+	for n > 0 {
+		if err := r.mr.Skip(); err != nil {
+			return err
+		}
+		if err := r.mr.Skip(); err != nil {
+			if err == io.EOF {
+				err = io.ErrUnexpectedEOF
+			}
+			return err
+		}
+		n--
+	}
+	return nil
 }
 
 // Close and release resources.

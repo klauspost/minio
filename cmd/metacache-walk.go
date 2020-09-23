@@ -10,14 +10,22 @@ import (
 	"github.com/minio/minio/cmd/logger"
 )
 
-func (s *xlStorage) WalkDir(ctx context.Context, bucket, dirPath string, recursive bool) (metaCacheEntries, error) {
+// WalkDirOptions provides options for WalkDir operations.
+type WalkDirOptions struct {
+	Bucket    string
+	BaseDir   string
+	Recursive bool
+}
+
+// WalkDir will traverse a directory and return all entries found.
+func (s *xlStorage) WalkDir(ctx context.Context, opts WalkDirOptions) (metaCacheEntries, error) {
 	atomic.AddInt32(&s.activeIOCount, 1)
 	defer func() {
 		atomic.AddInt32(&s.activeIOCount, -1)
 	}()
 
 	// Verify if volume is valid and it exists.
-	volumeDir, err := s.getVolDir(bucket)
+	volumeDir, err := s.getVolDir(opts.Bucket)
 	if err != nil {
 		return nil, err
 	}
@@ -35,13 +43,13 @@ func (s *xlStorage) WalkDir(ctx context.Context, bucket, dirPath string, recursi
 
 	// Fast exit track to check if we are listing an object with
 	// a trailing slash, this will avoid to list the object content.
-	if HasSuffix(dirPath, SlashSeparator) {
-		if st, err := os.Stat(pathJoin(volumeDir, dirPath, xlStorageFormatFile)); err == nil && st.Mode().IsRegular() {
+	if HasSuffix(opts.BaseDir, SlashSeparator) {
+		if st, err := os.Stat(pathJoin(volumeDir, opts.BaseDir, xlStorageFormatFile)); err == nil && st.Mode().IsRegular() {
 			return nil, errFileNotFound
 		}
 	}
 
-	scanDirs := []string{dirPath}
+	scanDirs := []string{opts.BaseDir}
 	var res metaCacheEntries
 	for len(scanDirs) > 0 {
 		current := scanDirs[0]
@@ -55,7 +63,7 @@ func (s *xlStorage) WalkDir(ctx context.Context, bucket, dirPath string, recursi
 			scanDirs = scanDirs[:0]
 		}
 
-		entries, err := s.ListDir(ctx, bucket, current, -1)
+		entries, err := s.ListDir(ctx, opts.Bucket, current, -1)
 		if err != nil {
 			// Folder could have gone away in-between
 			if err != errVolumeNotFound {
@@ -79,7 +87,7 @@ func (s *xlStorage) WalkDir(ctx context.Context, bucket, dirPath string, recursi
 					res = append(res, meta)
 					continue
 				case os.IsNotExist(err):
-					if recursive {
+					if opts.Recursive {
 						scanDirs = append(scanDirs, meta.name)
 					}
 					res = append(res, meta)

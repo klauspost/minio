@@ -12,7 +12,7 @@ func Test_xlStorage_WalkDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	//results, err := xl.WalkDir(context.Background(), "warp-benchmark-bucket", "", true)
-	results, err := xl.WalkDir(context.Background(), "mybucket", "src/compress", true)
+	results, err := xl.WalkDir(context.Background(), WalkDirOptions{Bucket: "mybucket", BaseDir: "src/compress", Recursive: true})
 	if err != nil {
 		t.Fatal(err)
 	}
