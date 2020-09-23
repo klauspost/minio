@@ -7,6 +7,7 @@ import (
 )
 
 func Test_xlStorage_WalkDir(t *testing.T) {
+	t.Skip("Manual Testing Only")
 	xl, err := newLocalXLStorage("d:\\data\\mindev\\data2\\xl1\\")
 	if err != nil {
 		t.Fatal(err)
@@ -26,6 +27,7 @@ func Test_xlStorage_WalkDir(t *testing.T) {
 }
 
 func Test_xlStorage_WalkVersions(t *testing.T) {
+	t.Skip("Manual Testing Only")
 	xl, err := newLocalXLStorage("d:\\data\\mindev\\data2\\xl1\\")
 	if err != nil {
 		t.Fatal(err)

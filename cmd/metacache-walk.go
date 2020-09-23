@@ -115,3 +115,10 @@ func (s *xlStorage) WalkDir(ctx context.Context, opts WalkDirOptions) (*metaCach
 	sorted := res.sort()
 	return &sorted, nil
 }
+
+func (p *xlStorageDiskIDCheck) WalkDir(ctx context.Context, opts WalkDirOptions) (*metaCacheEntriesSorted, error) {
+	if err := p.checkDiskStale(); err != nil {
+		return nil, err
+	}
+	return p.storage.WalkDir(ctx, opts)
+}

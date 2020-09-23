@@ -531,7 +531,7 @@ func (d *dataUpdateTracker) filterFrom(ctx context.Context, oldest, newest uint6
 // cycleFilter will cycle the bloom filter to start recording to index y if not already.
 // The response will contain a bloom filter starting at index x up to, but not including index y.
 // If y is 0, the response will not update y, but return the currently recorded information
-// from the up until and including current y.
+// from the oldest (unless 0, then it will be all) until and including current y.
 func (d *dataUpdateTracker) cycleFilter(ctx context.Context, oldest, current uint64) (*bloomFilterResponse, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -540,7 +540,10 @@ func (d *dataUpdateTracker) cycleFilter(ctx context.Context, oldest, current uin
 			return d.filterFrom(ctx, d.Current.idx, d.Current.idx), nil
 		}
 		d.History.sort()
-		return d.filterFrom(ctx, d.History[len(d.History)-1].idx, d.Current.idx), nil
+		if oldest == 0 {
+			oldest = d.History[len(d.History)-1].idx
+		}
+		return d.filterFrom(ctx, oldest, d.Current.idx), nil
 	}
 
 	// Move current to history if new one requested
