@@ -185,7 +185,7 @@ func Test_metacacheReader_peek(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got != want {
+		if got.name != want {
 			t.Errorf("entry %d, want %q, got %q", i, want, got)
 		}
 		gotObj, err := r.next()

@@ -154,19 +154,19 @@ func newMetacacheReader(r io.Reader) *metacacheReader {
 // peek will return the name of the next object.
 // Will return io.EOF if there are no more objects.
 // Should be used sparingly.
-func (r *metacacheReader) peek() (string, error) {
+func (r *metacacheReader) peek() (metaCacheEntry, error) {
 	if r.current.name != "" {
-		return r.current.name, nil
+		return r.current, nil
 	}
 	var err error
 	if r.current.name, err = r.mr.ReadString(); err != nil {
-		return "", err
+		return metaCacheEntry{}, err
 	}
 	r.current.metadata, err = r.mr.ReadBytes(r.current.metadata[:0])
 	if err == io.EOF {
 		err = io.ErrUnexpectedEOF
 	}
-	return r.current.name, err
+	return r.current, err
 }
 
 // next will read one entry from the stream.

@@ -16,14 +16,13 @@ func Test_xlStorage_WalkDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	results.sort()
 	wr := newMetacacheFile("file.out")
 	defer wr.Close()
-	err = wr.write(results...)
+	err = wr.write(results.entries()...)
 	if err != nil {
 		t.Fatal(err)
 	}
-	fmt.Println("got", len(results))
+	fmt.Println("got", results.len())
 }
 
 func Test_xlStorage_WalkVersions(t *testing.T) {

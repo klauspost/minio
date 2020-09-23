@@ -18,7 +18,7 @@ type WalkDirOptions struct {
 }
 
 // WalkDir will traverse a directory and return all entries found.
-func (s *xlStorage) WalkDir(ctx context.Context, opts WalkDirOptions) (metaCacheEntries, error) {
+func (s *xlStorage) WalkDir(ctx context.Context, opts WalkDirOptions) (*metaCacheEntriesSorted, error) {
 	atomic.AddInt32(&s.activeIOCount, 1)
 	defer func() {
 		atomic.AddInt32(&s.activeIOCount, -1)
@@ -112,6 +112,6 @@ func (s *xlStorage) WalkDir(ctx context.Context, opts WalkDirOptions) (metaCache
 			}
 		}
 	}
-
-	return res, nil
+	sorted := res.sort()
+	return &sorted, nil
 }
