@@ -2,11 +2,15 @@ package cmd
 
 import (
 	"context"
+	"encoding/gob"
 	"io/ioutil"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync/atomic"
 
+	"github.com/minio/minio/cmd/http"
 	"github.com/minio/minio/cmd/logger"
 )
 
@@ -121,4 +125,28 @@ func (p *xlStorageDiskIDCheck) WalkDir(ctx context.Context, opts WalkDirOptions)
 		return nil, err
 	}
 	return p.storage.WalkDir(ctx, opts)
+}
+
+type walkDirResp struct {
+	Entries *metaCacheEntriesSorted
+	Err     error
+}
+
+// WalkDir will traverse a directory and return all entries found.
+func (client *storageRESTClient) WalkDir(ctx context.Context, opts WalkDirOptions) (*metaCacheEntriesSorted, error) {
+	values := make(url.Values)
+	values.Set(storageRESTVolume, opts.BaseDir)
+	values.Set(storageRESTFilePath, opts.Bucket)
+	values.Set(storageRESTRecursive, strconv.FormatBool(opts.Recursive))
+	respBody, err := client.call(ctx, storageRESTMethodReadFileStream, values, nil, -1)
+	if err != nil {
+		return nil, err
+	}
+	defer http.DrainBody(respBody)
+	r, err := waitForHTTPResponse(respBody)
+	fwResp := &walkDirResp{}
+	if err = gob.NewDecoder(r).Decode(fwResp); err != nil {
+		return nil, err
+	}
+	return fwResp.Entries, fwResp.Err
 }

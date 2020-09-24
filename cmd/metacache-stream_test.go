@@ -16,7 +16,11 @@ func loadMetacacheSample(t testing.TB) *metacacheReader {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return newMetacacheReader(bytes.NewBuffer(b))
+	r, err := newMetacacheReader(bytes.NewBuffer(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
 }
 
 func loadMetacacheSampleEntries(t testing.TB) metaCacheEntriesSorted {
@@ -26,6 +30,12 @@ func loadMetacacheSampleEntries(t testing.TB) metaCacheEntriesSorted {
 	if err != io.EOF {
 		t.Fatal(err)
 	}
+	if false {
+		w := newMetacacheFile("testdata/metacache-new.s2")
+		w.write(entries.entries()...)
+		w.Close()
+	}
+
 	return entries
 }
 
@@ -217,7 +227,10 @@ func Test_newMetacacheStream(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r = newMetacacheReader(&buf)
+	r, err = newMetacacheReader(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer r.Close()
 	names, err := r.readNames(-1)
 	if err != io.EOF {

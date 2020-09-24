@@ -16,6 +16,8 @@ var s2EncPool = sync.Pool{New: func() interface{} {
 	return s2.NewWriter(nil)
 }}
 
+const metacacheStreamVersion = 1
+
 // metacacheWriter provides a serializer of metacache objects.
 type metacacheWriter struct {
 	mw      *msgp.Writer
@@ -33,7 +35,14 @@ func newMetacacheWriter(out io.Writer) *metacacheWriter {
 		s2w.Reset(out)
 		w.mw = msgp.NewWriter(s2w)
 		w.creator = nil
+		if err := w.mw.WriteByte(metacacheStreamVersion); err != nil {
+			return err
+		}
+
 		w.closer = func() error {
+			if err := w.mw.WriteBool(false); err != nil {
+				return err
+			}
 			if err := w.mw.Flush(); err != nil {
 				return err
 			}
@@ -60,7 +69,14 @@ func newMetacacheFile(file string) *metacacheWriter {
 		s2w.Reset(fw)
 		w.mw = msgp.NewWriter(s2w)
 		w.creator = nil
+		if err := w.mw.WriteByte(metacacheStreamVersion); err != nil {
+			return err
+		}
 		w.closer = func() error {
+			// Indicate EOS
+			if err := w.mw.WriteBool(false); err != nil {
+				return err
+			}
 			if err := w.mw.Flush(); err != nil {
 				fw.Close()
 				return err
@@ -102,7 +118,12 @@ func (w *metacacheWriter) write(objs ...metaCacheEntry) error {
 		if len(o.name) == 0 {
 			return errors.New("metacacheWriter: no name provided")
 		}
-		err := w.mw.WriteString(o.name)
+		// Indicate EOS
+		err := w.mw.WriteBool(true)
+		if err != nil {
+			return err
+		}
+		err = w.mw.WriteString(o.name)
 		if err != nil {
 			return err
 		}
@@ -137,7 +158,8 @@ type metacacheReader struct {
 }
 
 // newMetacacheReader creates a new cache reader.
-func newMetacacheReader(r io.Reader) *metacacheReader {
+// If no input or stream version is wrong an error is returned.
+func newMetacacheReader(r io.Reader) (*metacacheReader, error) {
 	dec := s2DecPool.Get().(*s2.Reader)
 	dec.Reset(r)
 	mr := msgp.NewReader(dec)
@@ -148,7 +170,16 @@ func newMetacacheReader(r io.Reader) *metacacheReader {
 			s2DecPool.Put(dec)
 		},
 	}
-	return &m
+	v, err := mr.ReadByte()
+	if err != nil {
+		return nil, err
+	}
+	switch v {
+	case metacacheStreamVersion:
+	default:
+		return nil, fmt.Errorf("metacacheReader: Unknown version: %d", v)
+	}
+	return &m, nil
 }
 
 // peek will return the name of the next object.
@@ -158,8 +189,21 @@ func (r *metacacheReader) peek() (metaCacheEntry, error) {
 	if r.current.name != "" {
 		return r.current, nil
 	}
+	if more, err := r.mr.ReadBool(); !more {
+		switch err {
+		case nil:
+			return metaCacheEntry{}, io.EOF
+		case io.EOF:
+			return metaCacheEntry{}, io.ErrUnexpectedEOF
+		}
+		return metaCacheEntry{}, err
+	}
+
 	var err error
 	if r.current.name, err = r.mr.ReadString(); err != nil {
+		if err == io.EOF {
+			err = io.ErrUnexpectedEOF
+		}
 		return metaCacheEntry{}, err
 	}
 	r.current.metadata, err = r.mr.ReadBytes(r.current.metadata[:0])
@@ -181,7 +225,19 @@ func (r *metacacheReader) next() (metaCacheEntry, error) {
 		r.current.metadata = nil
 		return m, nil
 	}
+	if more, err := r.mr.ReadBool(); !more {
+		switch err {
+		case nil:
+			return m, io.EOF
+		case io.EOF:
+			return m, io.ErrUnexpectedEOF
+		}
+		return m, err
+	}
 	if m.name, err = r.mr.ReadString(); err != nil {
+		if err == io.EOF {
+			err = io.ErrUnexpectedEOF
+		}
 		return m, err
 	}
 	m.metadata, err = r.mr.ReadBytes(nil)
@@ -201,6 +257,15 @@ func (r *metacacheReader) forwardTo(s string) error {
 	// temporary name buffer.
 	var tmp = make([]byte, 0, 256)
 	for {
+		if more, err := r.mr.ReadBool(); !more {
+			switch err {
+			case nil:
+				return io.EOF
+			case io.EOF:
+				return io.ErrUnexpectedEOF
+			}
+			return err
+		}
 		// Read name without allocating more than 1 buffer.
 		sz, err := r.mr.ReadStringHeader()
 		if err != nil {
@@ -248,9 +313,21 @@ func (r *metacacheReader) readN(n int) (metaCacheEntriesSorted, error) {
 		r.current.metadata = nil
 	}
 	for n < 0 || len(res) < n {
+		if more, err := r.mr.ReadBool(); !more {
+			switch err {
+			case nil:
+				return metaCacheEntriesSorted{o: res}, io.EOF
+			case io.EOF:
+				return metaCacheEntriesSorted{o: res}, io.ErrUnexpectedEOF
+			}
+			return metaCacheEntriesSorted{o: res}, err
+		}
 		var err error
 		var meta metaCacheEntry
 		if meta.name, err = r.mr.ReadString(); err != nil {
+			if err == io.EOF {
+				err = io.ErrUnexpectedEOF
+			}
 			return metaCacheEntriesSorted{o: res}, err
 		}
 		if meta.metadata, err = r.mr.ReadBytes(nil); err != nil {
@@ -279,11 +356,19 @@ func (r *metacacheReader) readAll(ctx context.Context, dst chan<- metaCacheEntry
 		r.current.metadata = nil
 	}
 	for {
+		if more, err := r.mr.ReadBool(); !more {
+			switch err {
+			case io.EOF:
+				return io.ErrUnexpectedEOF
+			}
+			return err
+		}
+
 		var err error
 		var meta metaCacheEntry
 		if meta.name, err = r.mr.ReadString(); err != nil {
 			if err == io.EOF {
-				break
+				err = io.ErrUnexpectedEOF
 			}
 			return err
 		}
@@ -299,7 +384,6 @@ func (r *metacacheReader) readAll(ctx context.Context, dst chan<- metaCacheEntry
 		case dst <- meta:
 		}
 	}
-	return nil
 }
 
 // readFn will return all remaining objects
@@ -312,11 +396,19 @@ func (r *metacacheReader) readFn(ctx context.Context, fn func(entry metaCacheEnt
 		r.current.metadata = nil
 	}
 	for {
+		if more, err := r.mr.ReadBool(); !more {
+			switch err {
+			case io.EOF:
+				return io.ErrUnexpectedEOF
+			}
+			return err
+		}
+
 		var err error
 		var meta metaCacheEntry
 		if meta.name, err = r.mr.ReadString(); err != nil {
 			if err == io.EOF {
-				break
+				err = io.ErrUnexpectedEOF
 			}
 			return err
 		}
@@ -333,7 +425,6 @@ func (r *metacacheReader) readFn(ctx context.Context, fn func(entry metaCacheEnt
 			fn(meta)
 		}
 	}
-	return nil
 }
 
 // readNames will return all the requested number of names in order
@@ -353,6 +444,16 @@ func (r *metacacheReader) readNames(n int) ([]string, error) {
 		r.current.metadata = nil
 	}
 	for n < 0 || len(res) < n {
+		if more, err := r.mr.ReadBool(); !more {
+			switch err {
+			case nil:
+				return res, io.EOF
+			case io.EOF:
+				return res, io.ErrUnexpectedEOF
+			}
+			return res, err
+		}
+
 		var err error
 		var name string
 		if name, err = r.mr.ReadString(); err != nil {
@@ -381,12 +482,25 @@ func (r *metacacheReader) skip(n int) error {
 		r.current.metadata = nil
 	}
 	for n > 0 {
+		if more, err := r.mr.ReadBool(); !more {
+			switch err {
+			case nil:
+				return io.EOF
+			case io.EOF:
+				return io.ErrUnexpectedEOF
+			}
+			return err
+		}
+
 		if err := r.mr.Skip(); err != nil {
+			if err == io.EOF {
+				return io.ErrUnexpectedEOF
+			}
 			return err
 		}
 		if err := r.mr.Skip(); err != nil {
 			if err == io.EOF {
-				err = io.ErrUnexpectedEOF
+				return io.ErrUnexpectedEOF
 			}
 			return err
 		}
