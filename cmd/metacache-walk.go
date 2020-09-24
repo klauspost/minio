@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/gob"
+	"io"
 	"io/ioutil"
 	"net/url"
 	"os"
@@ -10,7 +11,6 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"github.com/minio/minio/cmd/http"
 	"github.com/minio/minio/cmd/logger"
 )
 
@@ -22,7 +22,8 @@ type WalkDirOptions struct {
 }
 
 // WalkDir will traverse a directory and return all entries found.
-func (s *xlStorage) WalkDir(ctx context.Context, opts WalkDirOptions) (*metaCacheEntriesSorted, error) {
+// On success a meta cache stream will be returned.
+func (s *xlStorage) WalkDir(ctx context.Context, opts WalkDirOptions) (io.ReadCloser, error) {
 	atomic.AddInt32(&s.activeIOCount, 1)
 	defer func() {
 		atomic.AddInt32(&s.activeIOCount, -1)
@@ -117,10 +118,13 @@ func (s *xlStorage) WalkDir(ctx context.Context, opts WalkDirOptions) (*metaCach
 		}
 	}
 	sorted := res.sort()
-	return &sorted, nil
+	// Stream output.
+	r, w := io.Pipe()
+	go sorted.writeTo(w)
+	return r, nil
 }
 
-func (p *xlStorageDiskIDCheck) WalkDir(ctx context.Context, opts WalkDirOptions) (*metaCacheEntriesSorted, error) {
+func (p *xlStorageDiskIDCheck) WalkDir(ctx context.Context, opts WalkDirOptions) (io.ReadCloser, error) {
 	if err := p.checkDiskStale(); err != nil {
 		return nil, err
 	}
@@ -128,25 +132,26 @@ func (p *xlStorageDiskIDCheck) WalkDir(ctx context.Context, opts WalkDirOptions)
 }
 
 type walkDirResp struct {
-	Entries *metaCacheEntriesSorted
-	Err     error
+	Err error
 }
 
 // WalkDir will traverse a directory and return all entries found.
-func (client *storageRESTClient) WalkDir(ctx context.Context, opts WalkDirOptions) (*metaCacheEntriesSorted, error) {
+func (client *storageRESTClient) WalkDir(ctx context.Context, opts WalkDirOptions) (io.ReadCloser, error) {
 	values := make(url.Values)
 	values.Set(storageRESTVolume, opts.BaseDir)
 	values.Set(storageRESTFilePath, opts.Bucket)
 	values.Set(storageRESTRecursive, strconv.FormatBool(opts.Recursive))
-	respBody, err := client.call(ctx, storageRESTMethodReadFileStream, values, nil, -1)
+	respBody, err := client.call(ctx, storageRESTMethodTODO, values, nil, -1)
 	if err != nil {
 		return nil, err
 	}
-	defer http.DrainBody(respBody)
 	r, err := waitForHTTPResponse(respBody)
 	fwResp := &walkDirResp{}
 	if err = gob.NewDecoder(r).Decode(fwResp); err != nil {
 		return nil, err
 	}
-	return fwResp.Entries, fwResp.Err
+	if fwResp.Err != nil {
+		return nil, fwResp.Err
+	}
+	return r, nil
 }
