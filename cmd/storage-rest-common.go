@@ -52,6 +52,7 @@ const (
 	storageRESTMethodDeleteVersions = "/deleteverions"
 	storageRESTMethodRenameFile     = "/renamefile"
 	storageRESTMethodVerifyFile     = "/verifyfile"
+	storageRESTMethodWalkDir        = "/walkdir"
 )
 
 const (

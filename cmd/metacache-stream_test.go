@@ -107,12 +107,13 @@ func Test_metacacheReader_readFn(t *testing.T) {
 	r := loadMetacacheSample(t)
 	defer r.Close()
 	i := 0
-	err := r.readFn(context.Background(), func(entry metaCacheEntry) {
+	err := r.readFn(func(entry metaCacheEntry) bool {
 		want := loadMetacacheSampleNames[i]
 		if entry.name != want {
 			t.Errorf("entry %d, want %q, got %q", i, want, entry.name)
 		}
 		i++
+		return true
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -212,11 +213,12 @@ func Test_newMetacacheStream(t *testing.T) {
 	r := loadMetacacheSample(t)
 	var buf bytes.Buffer
 	w := newMetacacheWriter(&buf)
-	err := r.readFn(context.Background(), func(object metaCacheEntry) {
+	err := r.readFn(func(object metaCacheEntry) bool {
 		err := w.write(object)
 		if err != nil {
 			t.Fatal(err)
 		}
+		return true
 	})
 	r.Close()
 	if err != nil {

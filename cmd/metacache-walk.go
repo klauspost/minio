@@ -2,15 +2,16 @@ package cmd
 
 import (
 	"context"
-	"encoding/gob"
 	"io"
 	"io/ioutil"
+	"net/http"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"sync/atomic"
 
+	"github.com/gorilla/mux"
 	"github.com/minio/minio/cmd/logger"
 )
 
@@ -131,27 +132,40 @@ func (p *xlStorageDiskIDCheck) WalkDir(ctx context.Context, opts WalkDirOptions)
 	return p.storage.WalkDir(ctx, opts)
 }
 
-type walkDirResp struct {
-	Err error
-}
-
 // WalkDir will traverse a directory and return all entries found.
+// On success a meta cache stream will be returned, that should be closed when done.
 func (client *storageRESTClient) WalkDir(ctx context.Context, opts WalkDirOptions) (io.ReadCloser, error) {
 	values := make(url.Values)
 	values.Set(storageRESTVolume, opts.BaseDir)
 	values.Set(storageRESTFilePath, opts.Bucket)
 	values.Set(storageRESTRecursive, strconv.FormatBool(opts.Recursive))
-	respBody, err := client.call(ctx, storageRESTMethodTODO, values, nil, -1)
+	respBody, err := client.call(ctx, storageRESTMethodWalkDir, values, nil, -1)
 	if err != nil {
 		return nil, err
 	}
-	r, err := waitForHTTPResponse(respBody)
-	fwResp := &walkDirResp{}
-	if err = gob.NewDecoder(r).Decode(fwResp); err != nil {
-		return nil, err
+	return waitForHTTPResponseCloser(respBody)
+}
+
+// WalkDirHandler - remote caller to list files and folders in a requested directory path.
+func (s *storageRESTServer) WalkDirHandler(w http.ResponseWriter, r *http.Request) {
+	if !s.IsValid(w, r) {
+		return
 	}
-	if fwResp.Err != nil {
-		return nil, fwResp.Err
+	vars := mux.Vars(r)
+	volume := vars[storageRESTVolume]
+	dirPath := vars[storageRESTDirPath]
+	recursive, err := strconv.ParseBool(vars[storageRESTRecursive])
+	done := keepHTTPResponseAlive(w)
+	if err != nil {
+		done(err)
+		return
 	}
-	return r, nil
+
+	resp, err := s.storage.WalkDir(r.Context(), WalkDirOptions{Bucket: volume, BaseDir: dirPath, Recursive: recursive})
+	done(err)
+	if err == nil {
+		// Copy response stream
+		defer resp.Close()
+		io.Copy(w, resp)
+	}
 }

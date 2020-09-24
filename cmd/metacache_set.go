@@ -31,12 +31,6 @@ type listPathOptions struct {
 	Separator string
 }
 
-type listPathResponse struct {
-	ID      string
-	Entries metaCacheEntriesSorted
-	Done    bool
-}
-
 // filter will apply the options and return the
 func (o listPathOptions) filter(r *metacacheReader) (entries metaCacheEntriesSorted, err error) {
 	// Forward to prefix, if any
@@ -64,14 +58,31 @@ func (o listPathOptions) filter(r *metacacheReader) (entries metaCacheEntriesSor
 			}
 		}
 	}
-	return
+	// Filter
+	if !o.Recursive {
+		entries.o = make(metaCacheEntries, 0, o.Limit)
+		// TODO: Check if we have to add a slash to the prefix sometimes?
+		err := r.readFn(func(entry metaCacheEntry) bool {
+			if entry.isInDir(o.Prefix, o.Separator) {
+				entries.o = append(entries.o, entry)
+			}
+			return entries.len() >= o.Limit
+		})
+		if err == io.EOF {
+			return entries, io.EOF
+		}
+		return entries, err
+	}
+
+	// We should not need to filter more.
+	return r.readN(o.Limit)
 }
 
 // Will return io.EOF if continuing would not yield more results.
 func (er erasureObjects) listPath(ctx context.Context, o listPathOptions) (entries metaCacheEntriesSorted, err error) {
 
 	// See if we have the listing stored.
-	// Not really a loop.
+	// Not really a loop, we break out if we are unable read and need to fall back.
 	for {
 		r, w := io.Pipe()
 		err := er.getObject(ctx, minioMetaBucket, path.Join("buckets", o.Bucket, o.ID+".bin"), 0, -1, w, "", ObjectOptions{})
@@ -83,7 +94,9 @@ func (er erasureObjects) listPath(ctx context.Context, o listPathOptions) (entri
 			break
 		}
 		defer mr.Close()
-		return entries, err
+		return o.filter(mr)
 	}
+
+	// We need to ask disks.
 	return
 }

@@ -387,9 +387,9 @@ func (r *metacacheReader) readAll(ctx context.Context, dst chan<- metaCacheEntry
 }
 
 // readFn will return all remaining objects
-// and provide a callback for each entry read in order.
-// The context allows the operation to be cancelled.
-func (r *metacacheReader) readFn(ctx context.Context, fn func(entry metaCacheEntry)) error {
+// and provide a callback for each entry read in order
+// as long as true is returned on the callback.
+func (r *metacacheReader) readFn(fn func(entry metaCacheEntry) bool) error {
 	if r.current.name != "" {
 		fn(r.current)
 		r.current.name = ""
@@ -418,11 +418,9 @@ func (r *metacacheReader) readFn(ctx context.Context, fn func(entry metaCacheEnt
 			}
 			return err
 		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-			fn(meta)
+		// Send it!
+		if !fn(meta) {
+			return nil
 		}
 	}
 }

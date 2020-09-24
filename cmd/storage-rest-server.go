@@ -782,6 +782,53 @@ func waitForHTTPResponse(respBody io.Reader) (io.Reader, error) {
 	}
 }
 
+// drainCloser can be used for wrapping an http response.
+// It will drain the body before closing.
+type drainCloser struct {
+	rc io.ReadCloser
+}
+
+// Read forwards the read operation.
+func (f drainCloser) Read(p []byte) (n int, err error) {
+	return f.rc.Read(p)
+}
+
+// Close drains the body and closes the upstream.
+func (f drainCloser) Close() error {
+	xhttp.DrainBody(f.rc)
+	return nil
+}
+
+// waitForHTTPResponseCloser will wait for responses where
+// keepHTTPResponseAlive has been used.
+// The returned reader contains the payload and must be closed if no error is returned.
+func waitForHTTPResponseCloser(respBody io.ReadCloser) (io.ReadCloser, error) {
+	var tmp [1]byte
+	for {
+		_, err := io.ReadFull(respBody, tmp[:])
+		if err != nil {
+			return nil, err
+		}
+		// Check if we have a response ready or a filler byte.
+		switch tmp[0] {
+		case 0:
+			return drainCloser{rc: respBody}, nil
+		case 1:
+			errorText, err := ioutil.ReadAll(respBody)
+			if err != nil {
+				return nil, err
+			}
+			respBody.Close()
+			return nil, errors.New(string(errorText))
+		case 32:
+			continue
+		default:
+			go xhttp.DrainBody(respBody)
+			return nil, fmt.Errorf("unexpected filler byte: %d", tmp[0])
+		}
+	}
+}
+
 // VerifyFileResp - VerifyFile()'s response.
 type VerifyFileResp struct {
 	Err error
@@ -916,6 +963,8 @@ func registerStorageRESTHandlers(router *mux.Router, endpointZones EndpointZones
 				Queries(restQueries(storageRESTSrcVolume, storageRESTSrcPath, storageRESTDstVolume, storageRESTDstPath)...)
 			subrouter.Methods(http.MethodPost).Path(storageRESTVersionPrefix + storageRESTMethodVerifyFile).HandlerFunc(httpTraceHdrs(server.VerifyFileHandler)).
 				Queries(restQueries(storageRESTVolume, storageRESTFilePath)...)
+			subrouter.Methods(http.MethodPost).Path(storageRESTVersionPrefix + storageRESTMethodWalkDir).HandlerFunc(httpTraceHdrs(server.WalkDirHandler)).
+				Queries(restQueries(storageRESTVolume, storageRESTFilePath, storageRESTRecursive)...)
 		}
 	}
 }

@@ -3,6 +3,8 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
+	"os"
 	"testing"
 )
 
@@ -12,18 +14,20 @@ func Test_xlStorage_WalkDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	//results, err := xl.WalkDir(context.Background(), "warp-benchmark-bucket", "", true)
-	results, err := xl.WalkDir(context.Background(), WalkDirOptions{Bucket: "mybucket", BaseDir: "src/compress", Recursive: true})
+	stream, err := xl.WalkDir(context.Background(), WalkDirOptions{Bucket: "mybucket", BaseDir: "src/compress", Recursive: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	wr := newMetacacheFile("file.out")
-	defer wr.Close()
-	err = wr.write(results.entries()...)
+	defer stream.Close()
+	f, err := os.Create("file.out")
 	if err != nil {
 		t.Fatal(err)
 	}
-	fmt.Println("got", results.len())
+	defer f.Close()
+	_, err = io.Copy(f, stream)
+	if err != nil {
+		t.Fatal(err)
+	}
 }
 
 func Test_xlStorage_WalkVersions(t *testing.T) {

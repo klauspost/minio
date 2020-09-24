@@ -29,6 +29,20 @@ func (o metaCacheEntry) isDir() bool {
 	return len(o.metadata) == 0
 }
 
+// hasPrefix returns whether an entry has a specific prefix
+func (o metaCacheEntry) hasPrefix(s string) bool {
+	return strings.HasPrefix(o.name, s)
+}
+
+// isInDir returns whether the entry is in the dir when considering the separator.
+func (o metaCacheEntry) isInDir(dir, separator string) bool {
+	ext := strings.TrimPrefix(o.name, dir)
+	if len(ext) != len(o.name) {
+		return !strings.Contains(ext, separator)
+	}
+	return false
+}
+
 // sort entries by name.
 // m is sorted and a sorted metadata object is returned.
 // Changes to m will also be reflected in the returned object.
@@ -151,7 +165,7 @@ func (m *metaCacheEntriesSorted) filterPrefix(s string) {
 	}
 	m.forwardTo(s)
 	for i, o := range m.o {
-		if !strings.HasPrefix(o.name, s) {
+		if !o.hasPrefix(s) {
 			m.o = m.o[:i]
 			break
 		}
