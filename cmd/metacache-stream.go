@@ -295,11 +295,11 @@ func (r *metacacheReader) forwardTo(s string) error {
 	}
 }
 
-// readNames will return all the requested number of names in order
+// readN will return all the requested number of entries in order
 // or all if n < 0.
 // Will return io.EOF if end of stream is reached.
 // If requesting 0 objects nil error will always be returned regardless of at end of stream.
-func (r *metacacheReader) readN(n int) (metaCacheEntriesSorted, error) {
+func (r *metacacheReader) readN(n int, inclDeleted bool) (metaCacheEntriesSorted, error) {
 	if n == 0 {
 		return metaCacheEntriesSorted{}, nil
 	}
@@ -308,6 +308,9 @@ func (r *metacacheReader) readN(n int) (metaCacheEntriesSorted, error) {
 		res = make(metaCacheEntries, 0, n)
 	}
 	if r.current.name != "" {
+		if inclDeleted || !r.current.isLatestDeletemarker() {
+			res = append(res, r.current)
+		}
 		res = append(res, r.current)
 		r.current.name = ""
 		r.current.metadata = nil
@@ -335,6 +338,10 @@ func (r *metacacheReader) readN(n int) (metaCacheEntriesSorted, error) {
 				err = io.ErrUnexpectedEOF
 			}
 			return metaCacheEntriesSorted{o: res}, err
+		} else {
+			if !inclDeleted && meta.isLatestDeletemarker() {
+				continue
+			}
 		}
 		res = append(res, meta)
 	}

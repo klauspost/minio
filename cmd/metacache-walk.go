@@ -17,14 +17,21 @@ import (
 
 // WalkDirOptions provides options for WalkDir operations.
 type WalkDirOptions struct {
-	Bucket    string
-	BaseDir   string
+	// Bucket to crawl
+	Bucket string
+
+	// Directory inside the bucket.
+	BaseDir string
+
+	// Do a full recursive scan.
 	Recursive bool
 }
 
 // WalkDir will traverse a directory and return all entries found.
-// On success a meta cache stream will be returned.
+// On success a sorted meta cache stream will be returned.
 func (s *xlStorage) WalkDir(ctx context.Context, opts WalkDirOptions) (io.ReadCloser, error) {
+	// It is possible to implement an unsorted version of this that returns entries out-of-order.
+	// The total processing time would be the same, but it will have a much faster time to first entry.
 	atomic.AddInt32(&s.activeIOCount, 1)
 	defer func() {
 		atomic.AddInt32(&s.activeIOCount, -1)
@@ -93,6 +100,16 @@ func (s *xlStorage) WalkDir(ctx context.Context, opts WalkDirOptions) (io.ReadCl
 					res = append(res, meta)
 					continue
 				case os.IsNotExist(err):
+					meta.metadata, err = ioutil.ReadFile(pathJoin(volumeDir, meta.name, xlStorageFormatFileV1))
+					if err != nil {
+						// Maybe rename? Would make it inconsistent across disks though.
+						// os.Rename(pathJoin(volumeDir, meta.name, xlStorageFormatFileV1), pathJoin(volumeDir, meta.name, xlStorageFormatFile))
+						meta.name = strings.TrimSuffix(meta.name, SlashSeparator)
+						res = append(res, meta)
+						continue
+					}
+
+					// NOT an object, scan recursively if found.
 					if opts.Recursive {
 						scanDirs = append(scanDirs, meta.name)
 					}
@@ -103,6 +120,7 @@ func (s *xlStorage) WalkDir(ctx context.Context, opts WalkDirOptions) (io.ReadCl
 					continue
 				}
 			} else {
+				// If root was an object return it as such.
 				if HasSuffix(entry, xlStorageFormatFile) {
 					meta.metadata, err = ioutil.ReadFile(pathJoin(volumeDir, meta.name, xlStorageFormatFile))
 					if err != nil {
@@ -110,6 +128,18 @@ func (s *xlStorage) WalkDir(ctx context.Context, opts WalkDirOptions) (io.ReadCl
 						continue
 					}
 					meta.name = strings.TrimSuffix(meta.name, xlStorageFormatFile)
+					meta.name = strings.TrimSuffix(meta.name, SlashSeparator)
+					res = append(res, meta)
+					continue
+				}
+				// Check legacy.
+				if HasSuffix(entry, xlStorageFormatFileV1) {
+					meta.metadata, err = ioutil.ReadFile(pathJoin(volumeDir, meta.name, xlStorageFormatFileV1))
+					if err != nil {
+						logger.LogIf(ctx, err)
+						continue
+					}
+					meta.name = strings.TrimSuffix(meta.name, xlStorageFormatFileV1)
 					meta.name = strings.TrimSuffix(meta.name, SlashSeparator)
 					res = append(res, meta)
 					continue

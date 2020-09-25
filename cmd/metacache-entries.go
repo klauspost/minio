@@ -2,18 +2,98 @@ package cmd
 
 import (
 	"bytes"
+	"errors"
 	"io"
+	"os"
 	"sort"
 	"strings"
 )
 
-// metaCacheEntry is an object or prefix within an unknown bucket.
+// metaCacheEntry is an object or a directory within an unknown bucket.
 type metaCacheEntry struct {
 	// name is the full name of the object including prefixes
 	name string
 	// Metadata. If none is present it is not an object but only a prefix.
 	// Entries without metadata will only be present in non-recursive scans.
 	metadata []byte
+
+	// cached contains the metadata if decoded.
+	cached *FileInfo
+}
+
+// isDir returns if the entry is representing a prefix directory.
+func (e metaCacheEntry) isDir() bool {
+	return len(e.metadata) == 0
+}
+
+// isObject returns if the entry is representing an object.
+func (e metaCacheEntry) isObject() bool {
+	return len(e.metadata) >= 0
+}
+
+// hasPrefix returns whether an entry has a specific prefix
+func (e metaCacheEntry) hasPrefix(s string) bool {
+	return strings.HasPrefix(e.name, s)
+}
+
+// isInDir returns whether the entry is in the dir when considering the separator.
+func (e metaCacheEntry) isInDir(dir, separator string) bool {
+	ext := strings.TrimPrefix(e.name, dir)
+	if len(ext) != len(e.name) {
+		return !strings.Contains(ext, separator)
+	}
+	return false
+}
+
+// isLatestDeletemarker returns whether the latest version is a delete marker.
+// If metadata is NOT versioned false will always be returned.
+// If v2 and UNABLE to load metadata true will be returned.
+func (e *metaCacheEntry) isLatestDeletemarker() bool {
+	if e.cached != nil {
+		return e.cached.Deleted
+	}
+	if !isXL2V1Format(e.metadata) {
+		return false
+	}
+	var xlMeta xlMetaV2
+	if err := xlMeta.Load(e.metadata); err != nil || len(xlMeta.Versions) == 0 {
+		return true
+	}
+	return xlMeta.Versions[len(xlMeta.Versions)].Type == DeleteType
+}
+
+// fileInfo returns the decoded metadata.
+// If versioned the latest version will be returned.
+func (e *metaCacheEntry) fileInfo(bucket string) (*FileInfo, error) {
+	if len(e.metadata) == 0 {
+		return nil, errors.New("metaCacheEntry: directories does not contain metadata")
+	}
+	if e.cached == nil {
+		fi, err := getFileInfo(e.metadata, bucket, e.name, "")
+		if err != nil {
+			return nil, err
+		}
+		e.cached = &fi
+	}
+	return e.cached, nil
+}
+
+// fileInfoVersions returns the metadata as FileInfoVersions.
+func (e *metaCacheEntry) fileInfoVersions(bucket string) (FileInfoVersions, error) {
+	if e.isDir() {
+		return FileInfoVersions{
+			Volume: bucket,
+			Name:   e.name,
+			Versions: []FileInfo{
+				{
+					Volume: bucket,
+					Name:   e.name,
+					Mode:   os.ModeDir,
+				},
+			},
+		}, nil
+	}
+	return getFileInfoVersions(e.metadata, bucket, e.name)
 }
 
 // metaCacheEntries is a slice of metacache entries.
@@ -22,25 +102,6 @@ type metaCacheEntries []metaCacheEntry
 // less function for sorting.
 func (m metaCacheEntries) less(i, j int) bool {
 	return m[i].name < m[j].name
-}
-
-// isDir returns if the object is representing a prefix directory.
-func (o metaCacheEntry) isDir() bool {
-	return len(o.metadata) == 0
-}
-
-// hasPrefix returns whether an entry has a specific prefix
-func (o metaCacheEntry) hasPrefix(s string) bool {
-	return strings.HasPrefix(o.name, s)
-}
-
-// isInDir returns whether the entry is in the dir when considering the separator.
-func (o metaCacheEntry) isInDir(dir, separator string) bool {
-	ext := strings.TrimPrefix(o.name, dir)
-	if len(ext) != len(o.name) {
-		return !strings.Contains(ext, separator)
-	}
-	return false
 }
 
 // sort entries by name.
@@ -112,6 +173,34 @@ func (m *metaCacheEntriesSorted) iterate(fn func(entry metaCacheEntry) (cont boo
 			return
 		}
 	}
+}
+
+// fileInfoVersions converts the metadata to FileInfoVersions where possible.
+// Metadata that cannot be decoded is skipped.
+func (m *metaCacheEntriesSorted) fileInfoVersions(bucket string) []FileInfoVersions {
+	dst := make([]FileInfoVersions, 0, m.len())
+	for _, entry := range m.o {
+		fiv, err := entry.fileInfoVersions(bucket)
+		if err != nil {
+			continue
+		}
+		dst = append(dst, fiv)
+	}
+	return dst
+}
+
+// fileInfoVersions converts the metadata to FileInfoVersions where possible.
+// Metadata that cannot be decoded is skipped.
+func (m *metaCacheEntriesSorted) fileInfos(bucket string) []FileInfo {
+	dst := make([]FileInfo, 0, m.len())
+	for _, entry := range m.o {
+		fi, err := entry.fileInfo(bucket)
+		if err != nil {
+			continue
+		}
+		dst = append(dst, *fi)
+	}
+	return dst
 }
 
 // forwardTo will truncate m so only entries that are s or after is in the list.
