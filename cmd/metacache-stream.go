@@ -12,10 +12,6 @@ import (
 	"github.com/tinylib/msgp/msgp"
 )
 
-var s2EncPool = sync.Pool{New: func() interface{} {
-	return s2.NewWriter(nil)
-}}
-
 const metacacheStreamVersion = 1
 
 // metacacheWriter provides a serializer of metacache objects.
@@ -29,13 +25,17 @@ type metacacheWriter struct {
 }
 
 // newMetacacheWriter will create a serializer that will write objects in given order to the output.
-func newMetacacheWriter(out io.Writer) *metacacheWriter {
+// Provide a block size that affects latency. If 0 a default of 128KiB will be used.
+// Block size can be up to 4MiB.
+func newMetacacheWriter(out io.Writer, blockSize int) *metacacheWriter {
+	if blockSize < 8<<10 {
+		blockSize = 128 << 10
+	}
 	w := metacacheWriter{
 		mw: nil,
 	}
 	w.creator = func() error {
-		s2w := s2EncPool.Get().(*s2.Writer)
-		s2w.Reset(out)
+		s2w := s2.NewWriter(out, s2.WriterBlockSize(blockSize))
 		w.mw = msgp.NewWriter(s2w)
 		w.creator = nil
 		if err := w.mw.WriteByte(metacacheStreamVersion); err != nil {
@@ -52,10 +52,7 @@ func newMetacacheWriter(out io.Writer) *metacacheWriter {
 			if err := w.mw.Flush(); err != nil {
 				return err
 			}
-			err := s2w.Close()
-			s2w.Reset(nil)
-			s2EncPool.Put(s2w)
-			return err
+			return s2w.Close()
 		}
 		return nil
 	}
@@ -71,8 +68,7 @@ func newMetacacheFile(file string) *metacacheWriter {
 		if err != nil {
 			return err
 		}
-		s2w := s2EncPool.Get().(*s2.Writer)
-		s2w.Reset(fw)
+		s2w := s2.NewWriter(fw, s2.WriterBlockSize(1<<20))
 		w.mw = msgp.NewWriter(s2w)
 		w.creator = nil
 		if err := w.mw.WriteByte(metacacheStreamVersion); err != nil {
@@ -95,8 +91,6 @@ func newMetacacheFile(file string) *metacacheWriter {
 				fw.Close()
 				return err
 			}
-			s2w.Reset(nil)
-			s2EncPool.Put(s2w)
 			return fw.Close()
 		}
 		return nil
@@ -169,7 +163,6 @@ func (w *metacacheWriter) stream() (chan<- metaCacheEntry, error) {
 			if len(o.name) == 0 || w.streamErr != nil {
 				continue
 			}
-
 			// Indicate EOS
 			err := w.mw.WriteBool(true)
 			if err != nil {

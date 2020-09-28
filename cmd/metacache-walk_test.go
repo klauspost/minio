@@ -3,28 +3,24 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"testing"
 )
 
 func Test_xlStorage_WalkDir(t *testing.T) {
-	t.Skip("Manual Testing Only")
+	//t.Skip("Manual Testing Only")
 	xl, err := newLocalXLStorage("d:\\data\\mindev\\data2\\xl1\\")
 	if err != nil {
 		t.Fatal(err)
 	}
-	stream, err := xl.WalkDir(context.Background(), WalkDirOptions{Bucket: "mybucket", BaseDir: "src/compress", Recursive: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
 	f, err := os.Create("file.out")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	_, err = io.Copy(f, stream)
+
+	//err = xl.WalkDir(context.Background(), WalkDirOptions{Bucket: "mybucket", BaseDir: "src/compress", Recursive: false}, f)
+	err = xl.WalkDir(context.Background(), WalkDirOptions{Bucket: "warp-benchmark-bucket", BaseDir: "", Recursive: true}, f)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -200,7 +200,7 @@ type metaCacheEntriesSorted struct {
 
 // writeTo will write all objects to the provided output.
 func (m metaCacheEntriesSorted) writeTo(writer io.Writer) error {
-	w := newMetacacheWriter(writer)
+	w := newMetacacheWriter(writer, 1<<20)
 	if err := w.write(m.o...); err != nil {
 		w.Close()
 		return err

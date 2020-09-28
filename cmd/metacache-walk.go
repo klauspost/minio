@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -29,7 +30,7 @@ type WalkDirOptions struct {
 
 // WalkDir will traverse a directory and return all entries found.
 // On success a sorted meta cache stream will be returned.
-func (s *xlStorage) WalkDir(ctx context.Context, opts WalkDirOptions) (io.ReadCloser, error) {
+func (s *xlStorage) WalkDir(ctx context.Context, opts WalkDirOptions, wr io.Writer) error {
 	// It is possible to implement an unsorted version of this that returns entries out-of-order.
 	// The total processing time would be the same, but it will have a much faster time to first entry.
 	atomic.AddInt32(&s.activeIOCount, 1)
@@ -40,140 +41,152 @@ func (s *xlStorage) WalkDir(ctx context.Context, opts WalkDirOptions) (io.ReadCl
 	// Verify if volume is valid and it exists.
 	volumeDir, err := s.getVolDir(opts.Bucket)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	// Stat a volume entry.
 	_, err = os.Stat(volumeDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, errVolumeNotFound
+			return errVolumeNotFound
 		} else if isSysErrIO(err) {
-			return nil, errFaultyDisk
+			return errFaultyDisk
 		}
-		return nil, err
+		return err
 	}
 
 	// Fast exit track to check if we are listing an object with
 	// a trailing slash, this will avoid to list the object content.
 	if HasSuffix(opts.BaseDir, SlashSeparator) {
 		if st, err := os.Stat(pathJoin(volumeDir, opts.BaseDir, xlStorageFormatFile)); err == nil && st.Mode().IsRegular() {
-			return nil, errFileNotFound
+			return errFileNotFound
 		}
 	}
+	w := newMetacacheWriter(wr, 16<<10)
+	defer w.Close()
+	out, err := w.stream()
+	if err != nil {
+		return err
+	}
+	defer close(out)
 
-	scanDirs := []string{opts.BaseDir}
-	var res metaCacheEntries
-	for len(scanDirs) > 0 {
-		current := scanDirs[0]
-
-		// Trim front entry from scanDirs.
-		if len(scanDirs) > 1 {
-			// Copy to front
-			copy(scanDirs, scanDirs[1:])
-			scanDirs = scanDirs[:len(scanDirs)-1]
-		} else {
-			scanDirs = scanDirs[:0]
-		}
-
+	var scanDir func(path string) error
+	scanDir = func(current string) error {
 		entries, err := s.ListDir(ctx, opts.Bucket, current, -1)
 		if err != nil {
 			// Folder could have gone away in-between
 			if err != errVolumeNotFound {
 				logger.LogIf(ctx, err)
 			}
-			continue
+			return nil
 		}
+		for i, entry := range entries {
+			if strings.HasSuffix(entry, slashSeparator) {
+				// Trim slash, maybe compiler is clever?
+				entries[i] = entries[i][:len(entry)-1]
+				continue
+			}
 
-		// Pre-alloc what we know we will need
-		if len(res) == 0 {
-			res = make(metaCacheEntries, 0, len(entries))
-		}
-		for _, entry := range entries {
-			// All objects will be returned as directories, there has been no object check yet.
-			meta := metaCacheEntry{name: PathJoin(current, entry)}
-			if HasSuffix(meta.name, SlashSeparator) {
+			// If root was an object return it as such.
+			if HasSuffix(entry, xlStorageFormatFile) {
+				var meta metaCacheEntry
 				meta.metadata, err = ioutil.ReadFile(pathJoin(volumeDir, meta.name, xlStorageFormatFile))
-				switch {
-				case err == nil:
-					meta.name = strings.TrimSuffix(meta.name, SlashSeparator)
-					res = append(res, meta)
-					continue
-				case os.IsNotExist(err):
-					meta.metadata, err = ioutil.ReadFile(pathJoin(volumeDir, meta.name, xlStorageFormatFileV1))
-					if err != nil {
-						// Maybe rename? Would make it inconsistent across disks though.
-						// os.Rename(pathJoin(volumeDir, meta.name, xlStorageFormatFileV1), pathJoin(volumeDir, meta.name, xlStorageFormatFile))
-						meta.name = strings.TrimSuffix(meta.name, SlashSeparator)
-						res = append(res, meta)
-						continue
-					}
-
-					// NOT an object, scan recursively if found.
-					if opts.Recursive {
-						scanDirs = append(scanDirs, meta.name)
-					}
-					res = append(res, meta)
-					continue
-				default:
+				if err != nil {
 					logger.LogIf(ctx, err)
 					continue
 				}
-			} else {
-				// If root was an object return it as such.
-				if HasSuffix(entry, xlStorageFormatFile) {
-					meta.metadata, err = ioutil.ReadFile(pathJoin(volumeDir, meta.name, xlStorageFormatFile))
-					if err != nil {
-						logger.LogIf(ctx, err)
-						continue
-					}
-					meta.name = strings.TrimSuffix(meta.name, xlStorageFormatFile)
-					meta.name = strings.TrimSuffix(meta.name, SlashSeparator)
-					res = append(res, meta)
+				meta.name = strings.TrimSuffix(meta.name, xlStorageFormatFile)
+				meta.name = strings.TrimSuffix(meta.name, SlashSeparator)
+				out <- meta
+				return nil
+			}
+			// Check legacy.
+			if HasSuffix(entry, xlStorageFormatFileV1) {
+				var meta metaCacheEntry
+				meta.metadata, err = ioutil.ReadFile(pathJoin(volumeDir, meta.name, xlStorageFormatFileV1))
+				if err != nil {
+					logger.LogIf(ctx, err)
 					continue
 				}
-				// Check legacy.
-				if HasSuffix(entry, xlStorageFormatFileV1) {
-					meta.metadata, err = ioutil.ReadFile(pathJoin(volumeDir, meta.name, xlStorageFormatFileV1))
-					if err != nil {
-						logger.LogIf(ctx, err)
-						continue
-					}
-					meta.name = strings.TrimSuffix(meta.name, xlStorageFormatFileV1)
-					meta.name = strings.TrimSuffix(meta.name, SlashSeparator)
-					res = append(res, meta)
+				meta.name = strings.TrimSuffix(meta.name, xlStorageFormatFileV1)
+				meta.name = strings.TrimSuffix(meta.name, SlashSeparator)
+				out <- meta
+				return nil
+			}
+			// Skip all other files.
+		}
+
+		// Process in sort order.
+		sort.Strings(entries)
+		dirStack := make([]string, 0, 5)
+		for _, entry := range entries {
+			meta := metaCacheEntry{name: PathJoin(current, entry)}
+			// If directory entry on stack before this, pop it now.
+			for len(dirStack) > 0 && dirStack[len(dirStack)-1] < meta.name {
+				pop := dirStack[len(dirStack)-1]
+				out <- metaCacheEntry{name: pop}
+				if opts.Recursive {
+					// Scan folder we found. Should be in correct sort order where we are.
+					err := scanDir(pop)
+					logger.LogIf(ctx, err)
+				}
+				dirStack = dirStack[:len(dirStack)-1]
+			}
+
+			// All objects will be returned as directories, there has been no object check yet.
+			meta.metadata, err = ioutil.ReadFile(pathJoin(volumeDir, meta.name, xlStorageFormatFile))
+			switch {
+			case err == nil:
+				// It was an object
+				out <- meta
+			case os.IsNotExist(err):
+				meta.metadata, err = ioutil.ReadFile(pathJoin(volumeDir, meta.name, xlStorageFormatFileV1))
+				if err == nil {
+					// Maybe rename? Would make it inconsistent across disks though.
+					// os.Rename(pathJoin(volumeDir, meta.name, xlStorageFormatFileV1), pathJoin(volumeDir, meta.name, xlStorageFormatFile))
+					// It was an object
+					out <- meta
 					continue
 				}
-				// Ignore files that are not metadata
+
+				// NOT an object, append to stack (with slash)
+				dirStack = append(dirStack, meta.name+slashSeparator)
+			default:
+				logger.LogIf(ctx, err)
 			}
 		}
+		return nil
 	}
-	sorted := res.sort()
+
 	// Stream output.
-	r, w := io.Pipe()
-	go sorted.writeTo(w)
-	return r, nil
+	return scanDir(opts.BaseDir)
 }
 
-func (p *xlStorageDiskIDCheck) WalkDir(ctx context.Context, opts WalkDirOptions) (io.ReadCloser, error) {
+func (p *xlStorageDiskIDCheck) WalkDir(ctx context.Context, opts WalkDirOptions, wr io.Writer) error {
 	if err := p.checkDiskStale(); err != nil {
-		return nil, err
+		return err
 	}
-	return p.storage.WalkDir(ctx, opts)
+	return p.storage.WalkDir(ctx, opts, wr)
 }
 
 // WalkDir will traverse a directory and return all entries found.
 // On success a meta cache stream will be returned, that should be closed when done.
-func (client *storageRESTClient) WalkDir(ctx context.Context, opts WalkDirOptions) (io.ReadCloser, error) {
+func (client *storageRESTClient) WalkDir(ctx context.Context, opts WalkDirOptions, wr io.Writer) error {
 	values := make(url.Values)
 	values.Set(storageRESTVolume, opts.BaseDir)
 	values.Set(storageRESTFilePath, opts.Bucket)
 	values.Set(storageRESTRecursive, strconv.FormatBool(opts.Recursive))
 	respBody, err := client.call(ctx, storageRESTMethodWalkDir, values, nil, -1)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	return waitForHTTPResponseCloser(respBody)
+	rc, err := waitForHTTPResponseCloser(respBody)
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+	_, err = io.Copy(wr, respBody)
+	return err
 }
 
 // WalkDirHandler - remote caller to list files and folders in a requested directory path.
@@ -190,12 +203,6 @@ func (s *storageRESTServer) WalkDirHandler(w http.ResponseWriter, r *http.Reques
 		done(err)
 		return
 	}
-
-	resp, err := s.storage.WalkDir(r.Context(), WalkDirOptions{Bucket: volume, BaseDir: dirPath, Recursive: recursive})
-	done(err)
-	if err == nil {
-		// Copy response stream
-		defer resp.Close()
-		io.Copy(w, resp)
-	}
+	done(nil)
+	logger.LogIf(r.Context(), s.storage.WalkDir(r.Context(), WalkDirOptions{Bucket: volume, BaseDir: dirPath, Recursive: recursive}, w))
 }

@@ -197,7 +197,7 @@ func Test_metacacheReader_peek(t *testing.T) {
 			t.Fatal(err)
 		}
 		if got.name != want {
-			t.Errorf("entry %d, want %q, got %q", i, want, got)
+			t.Errorf("entry %d, want %q, got %q", i, want, got.name)
 		}
 		gotObj, err := r.next()
 		if err != nil {
@@ -212,7 +212,7 @@ func Test_metacacheReader_peek(t *testing.T) {
 func Test_newMetacacheStream(t *testing.T) {
 	r := loadMetacacheSample(t)
 	var buf bytes.Buffer
-	w := newMetacacheWriter(&buf)
+	w := newMetacacheWriter(&buf, 1<<20)
 	err := r.readFn(func(object metaCacheEntry) bool {
 		err := w.write(object)
 		if err != nil {

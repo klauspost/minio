@@ -161,9 +161,10 @@ func (er erasureObjects) listPath(ctx context.Context, o listPathOptions) (entri
 	for i := range disks {
 		go func(i int) {
 			d := disks[i]
-			rc, err := d.WalkDir(ctx, WalkDirOptions{Bucket: o.Bucket, BaseDir: o.BaseDir, Recursive: o.Recursive || o.Separator != SlashSeparator})
+			// FIXME: nil writer
+			err := d.WalkDir(ctx, WalkDirOptions{Bucket: o.Bucket, BaseDir: o.BaseDir, Recursive: o.Recursive || o.Separator != SlashSeparator}, nil)
 			logger.LogIf(ctx, err)
-			syncResults <- rc
+			// FIXME no longer works
 		}(i)
 	}
 	var readers []*metacacheReader
