@@ -7,6 +7,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 )
 
 // metaCacheEntry is an object or a directory within an unknown bucket.
@@ -129,6 +130,57 @@ func (m metaCacheEntries) shallowClone() metaCacheEntries {
 		dst[i] = obj
 	}
 	return dst
+}
+
+type metadataResolutionParams struct {
+	er        erasureObjects
+	startTime time.Time
+	dirQuorum int
+	bucket    string
+}
+
+func (m metaCacheEntries) resolve(r *metadataResolutionParams) (selected *metaCacheEntry, ok bool) {
+	if len(m) == 0 {
+		return nil, false
+	}
+
+	dirExists := 0
+	var selFIV *FileInfo
+	for i := range m {
+		entry := &m[i]
+		if entry.name == "" {
+			continue
+		}
+		if entry.isDir() {
+			dirExists++
+			selected = entry
+			continue
+		}
+
+		// Get new entry metadata
+		fiv, err := entry.fileInfo(r.bucket)
+		if err != nil {
+			continue
+		}
+		if selFIV == nil {
+			selected = entry
+			selFIV = fiv
+			continue
+		}
+		// Select latest modtime.
+		if fiv.ModTime.After(selFIV.ModTime) {
+			selected = entry
+			selFIV = fiv
+			continue
+		}
+	}
+	// If directory, we need quorum.
+	if dirExists > 0 && dirExists < r.dirQuorum {
+		return nil, false
+	}
+
+	// Take the latest selected.
+	return selected, selected != nil
 }
 
 // names will return all names in order.

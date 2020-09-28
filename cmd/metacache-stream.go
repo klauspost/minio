@@ -23,6 +23,9 @@ type metacacheWriter struct {
 	mw      *msgp.Writer
 	creator func() error
 	closer  func() error
+
+	streamErr error
+	streamWg  sync.WaitGroup
 }
 
 // newMetacacheWriter will create a serializer that will write objects in given order to the output.
@@ -40,6 +43,9 @@ func newMetacacheWriter(out io.Writer) *metacacheWriter {
 		}
 
 		w.closer = func() error {
+			if w.streamErr != nil {
+				return w.streamErr
+			}
 			if err := w.mw.WriteBool(false); err != nil {
 				return err
 			}
@@ -73,6 +79,10 @@ func newMetacacheFile(file string) *metacacheWriter {
 			return err
 		}
 		w.closer = func() error {
+			if w.streamErr != nil {
+				fw.Close()
+				return w.streamErr
+			}
 			// Indicate EOS
 			if err := w.mw.WriteBool(false); err != nil {
 				return err
@@ -136,11 +146,58 @@ func (w *metacacheWriter) write(objs ...metaCacheEntry) error {
 	return nil
 }
 
+// stream entries to the output.
+// The returned channel should be closed when done.
+// Any error is reported when closing the metacacheWriter.
+func (w *metacacheWriter) stream() (chan<- metaCacheEntry, error) {
+	if w.creator != nil {
+		err := w.creator()
+		w.creator = nil
+		if err != nil {
+			return nil, fmt.Errorf("metacacheWriter: unable to create writer: %w", err)
+		}
+		if w.mw == nil {
+			return nil, errors.New("metacacheWriter: writer not initialized")
+		}
+	}
+	var objs = make(chan metaCacheEntry, 100)
+	w.streamErr = nil
+	w.streamWg.Add(1)
+	go func() {
+		defer w.streamWg.Done()
+		for o := range objs {
+			if len(o.name) == 0 || w.streamErr != nil {
+				continue
+			}
+
+			// Indicate EOS
+			err := w.mw.WriteBool(true)
+			if err != nil {
+				w.streamErr = err
+				continue
+			}
+			err = w.mw.WriteString(o.name)
+			if err != nil {
+				w.streamErr = err
+				continue
+			}
+			err = w.mw.WriteBytes(o.metadata)
+			if err != nil {
+				w.streamErr = err
+				continue
+			}
+		}
+	}()
+
+	return objs, nil
+}
+
 // Close and release resources.
 func (w *metacacheWriter) Close() error {
 	if w == nil || w.closer == nil {
 		return nil
 	}
+	w.streamWg.Wait()
 	err := w.closer()
 	w.closer = nil
 	return err
@@ -154,6 +211,7 @@ var s2DecPool = sync.Pool{New: func() interface{} {
 type metacacheReader struct {
 	mr      *msgp.Reader
 	current metaCacheEntry
+	err     error // stateful error
 	closer  func()
 }
 
@@ -186,16 +244,22 @@ func newMetacacheReader(r io.Reader) (*metacacheReader, error) {
 // Will return io.EOF if there are no more objects.
 // Should be used sparingly.
 func (r *metacacheReader) peek() (metaCacheEntry, error) {
+	if r.err != nil {
+		return metaCacheEntry{}, r.err
+	}
 	if r.current.name != "" {
 		return r.current, nil
 	}
 	if more, err := r.mr.ReadBool(); !more {
 		switch err {
 		case nil:
+			r.err = io.EOF
 			return metaCacheEntry{}, io.EOF
 		case io.EOF:
+			r.err = io.ErrUnexpectedEOF
 			return metaCacheEntry{}, io.ErrUnexpectedEOF
 		}
+		r.err = err
 		return metaCacheEntry{}, err
 	}
 
@@ -204,18 +268,23 @@ func (r *metacacheReader) peek() (metaCacheEntry, error) {
 		if err == io.EOF {
 			err = io.ErrUnexpectedEOF
 		}
+		r.err = err
 		return metaCacheEntry{}, err
 	}
 	r.current.metadata, err = r.mr.ReadBytes(r.current.metadata[:0])
 	if err == io.EOF {
 		err = io.ErrUnexpectedEOF
 	}
+	r.err = err
 	return r.current, err
 }
 
 // next will read one entry from the stream.
 // Generally not recommended for fast operation.
 func (r *metacacheReader) next() (metaCacheEntry, error) {
+	if r.err != nil {
+		return metaCacheEntry{}, r.err
+	}
 	var m metaCacheEntry
 	var err error
 	if r.current.name != "" {
@@ -228,29 +297,37 @@ func (r *metacacheReader) next() (metaCacheEntry, error) {
 	if more, err := r.mr.ReadBool(); !more {
 		switch err {
 		case nil:
+			r.err = io.EOF
 			return m, io.EOF
 		case io.EOF:
+			r.err = io.ErrUnexpectedEOF
 			return m, io.ErrUnexpectedEOF
 		}
+		r.err = err
 		return m, err
 	}
 	if m.name, err = r.mr.ReadString(); err != nil {
 		if err == io.EOF {
 			err = io.ErrUnexpectedEOF
 		}
+		r.err = err
 		return m, err
 	}
 	m.metadata, err = r.mr.ReadBytes(nil)
 	if err == io.EOF {
 		err = io.ErrUnexpectedEOF
 	}
-
+	r.err = err
 	return m, err
 }
 
 // forwardTo will forward to the first entry that is >= s.
 // Will return io.EOF if end of stream is reached without finding any.
 func (r *metacacheReader) forwardTo(s string) error {
+	if r.err != nil {
+		return r.err
+	}
+
 	if s == "" {
 		return nil
 	}
@@ -260,15 +337,19 @@ func (r *metacacheReader) forwardTo(s string) error {
 		if more, err := r.mr.ReadBool(); !more {
 			switch err {
 			case nil:
+				r.err = io.EOF
 				return io.EOF
 			case io.EOF:
+				r.err = io.ErrUnexpectedEOF
 				return io.ErrUnexpectedEOF
 			}
+			r.err = err
 			return err
 		}
 		// Read name without allocating more than 1 buffer.
 		sz, err := r.mr.ReadStringHeader()
 		if err != nil {
+			r.err = err
 			return err
 		}
 		if cap(tmp) < int(sz) {
@@ -277,6 +358,7 @@ func (r *metacacheReader) forwardTo(s string) error {
 		tmp = tmp[:sz]
 		_, err = r.mr.R.ReadFull(tmp)
 		if err != nil {
+			r.err = err
 			return err
 		}
 		if string(tmp) >= s {
@@ -290,6 +372,7 @@ func (r *metacacheReader) forwardTo(s string) error {
 			if err == io.EOF {
 				err = io.ErrUnexpectedEOF
 			}
+			r.err = err
 			return err
 		}
 	}
@@ -300,6 +383,9 @@ func (r *metacacheReader) forwardTo(s string) error {
 // Will return io.EOF if end of stream is reached.
 // If requesting 0 objects nil error will always be returned regardless of at end of stream.
 func (r *metacacheReader) readN(n int, inclDeleted bool) (metaCacheEntriesSorted, error) {
+	if r.err != nil {
+		return metaCacheEntriesSorted{}, r.err
+	}
 	if n == 0 {
 		return metaCacheEntriesSorted{}, nil
 	}
@@ -319,10 +405,13 @@ func (r *metacacheReader) readN(n int, inclDeleted bool) (metaCacheEntriesSorted
 		if more, err := r.mr.ReadBool(); !more {
 			switch err {
 			case nil:
+				r.err = io.EOF
 				return metaCacheEntriesSorted{o: res}, io.EOF
 			case io.EOF:
+				r.err = io.ErrUnexpectedEOF
 				return metaCacheEntriesSorted{o: res}, io.ErrUnexpectedEOF
 			}
+			r.err = err
 			return metaCacheEntriesSorted{o: res}, err
 		}
 		var err error
@@ -331,12 +420,14 @@ func (r *metacacheReader) readN(n int, inclDeleted bool) (metaCacheEntriesSorted
 			if err == io.EOF {
 				err = io.ErrUnexpectedEOF
 			}
+			r.err = err
 			return metaCacheEntriesSorted{o: res}, err
 		}
 		if meta.metadata, err = r.mr.ReadBytes(nil); err != nil {
 			if err == io.EOF {
 				err = io.ErrUnexpectedEOF
 			}
+			r.err = err
 			return metaCacheEntriesSorted{o: res}, err
 		} else {
 			if !inclDeleted && meta.isLatestDeletemarker() {
@@ -351,13 +442,16 @@ func (r *metacacheReader) readN(n int, inclDeleted bool) (metaCacheEntriesSorted
 // readAll will return all remaining objects on the dst channel and close it when done.
 // The context allows the operation to be cancelled.
 func (r *metacacheReader) readAll(ctx context.Context, dst chan<- metaCacheEntry) error {
+	if r.err != nil {
+		return r.err
+	}
 	defer close(dst)
 	if r.current.name != "" {
 		select {
 		case <-ctx.Done():
+			r.err = ctx.Err()
 			return ctx.Err()
 		case dst <- r.current:
-
 		}
 		r.current.name = ""
 		r.current.metadata = nil
@@ -366,8 +460,9 @@ func (r *metacacheReader) readAll(ctx context.Context, dst chan<- metaCacheEntry
 		if more, err := r.mr.ReadBool(); !more {
 			switch err {
 			case io.EOF:
-				return io.ErrUnexpectedEOF
+				err = io.ErrUnexpectedEOF
 			}
+			r.err = err
 			return err
 		}
 
@@ -377,16 +472,19 @@ func (r *metacacheReader) readAll(ctx context.Context, dst chan<- metaCacheEntry
 			if err == io.EOF {
 				err = io.ErrUnexpectedEOF
 			}
+			r.err = err
 			return err
 		}
 		if meta.metadata, err = r.mr.ReadBytes(nil); err != nil {
 			if err == io.EOF {
 				err = io.ErrUnexpectedEOF
 			}
+			r.err = err
 			return err
 		}
 		select {
 		case <-ctx.Done():
+			r.err = ctx.Err()
 			return ctx.Err()
 		case dst <- meta:
 		}
@@ -397,6 +495,9 @@ func (r *metacacheReader) readAll(ctx context.Context, dst chan<- metaCacheEntry
 // and provide a callback for each entry read in order
 // as long as true is returned on the callback.
 func (r *metacacheReader) readFn(fn func(entry metaCacheEntry) bool) error {
+	if r.err != nil {
+		return r.err
+	}
 	if r.current.name != "" {
 		fn(r.current)
 		r.current.name = ""
@@ -406,6 +507,7 @@ func (r *metacacheReader) readFn(fn func(entry metaCacheEntry) bool) error {
 		if more, err := r.mr.ReadBool(); !more {
 			switch err {
 			case io.EOF:
+				r.err = io.ErrUnexpectedEOF
 				return io.ErrUnexpectedEOF
 			}
 			return err
@@ -417,12 +519,14 @@ func (r *metacacheReader) readFn(fn func(entry metaCacheEntry) bool) error {
 			if err == io.EOF {
 				err = io.ErrUnexpectedEOF
 			}
+			r.err = err
 			return err
 		}
 		if meta.metadata, err = r.mr.ReadBytes(nil); err != nil {
 			if err == io.EOF {
 				err = io.ErrUnexpectedEOF
 			}
+			r.err = err
 			return err
 		}
 		// Send it!
@@ -436,6 +540,9 @@ func (r *metacacheReader) readFn(fn func(entry metaCacheEntry) bool) error {
 // or all if n < 0.
 // Will return io.EOF if end of stream is reached.
 func (r *metacacheReader) readNames(n int) ([]string, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
 	if n == 0 {
 		return nil, nil
 	}
@@ -452,8 +559,10 @@ func (r *metacacheReader) readNames(n int) ([]string, error) {
 		if more, err := r.mr.ReadBool(); !more {
 			switch err {
 			case nil:
+				r.err = io.EOF
 				return res, io.EOF
 			case io.EOF:
+				r.err = io.ErrUnexpectedEOF
 				return res, io.ErrUnexpectedEOF
 			}
 			return res, err
@@ -462,12 +571,14 @@ func (r *metacacheReader) readNames(n int) ([]string, error) {
 		var err error
 		var name string
 		if name, err = r.mr.ReadString(); err != nil {
+			r.err = err
 			return res, err
 		}
 		if err = r.mr.Skip(); err != nil {
 			if err == io.EOF {
 				err = io.ErrUnexpectedEOF
 			}
+			r.err = err
 			return res, err
 		}
 		res = append(res, name)
@@ -478,6 +589,9 @@ func (r *metacacheReader) readNames(n int) ([]string, error) {
 // skip n entries on the input stream.
 // If there are less entries left io.EOF is returned.
 func (r *metacacheReader) skip(n int) error {
+	if r.err != nil {
+		return r.err
+	}
 	if n <= 0 {
 		return nil
 	}
@@ -490,8 +604,10 @@ func (r *metacacheReader) skip(n int) error {
 		if more, err := r.mr.ReadBool(); !more {
 			switch err {
 			case nil:
+				r.err = io.EOF
 				return io.EOF
 			case io.EOF:
+				r.err = io.ErrUnexpectedEOF
 				return io.ErrUnexpectedEOF
 			}
 			return err
@@ -499,14 +615,16 @@ func (r *metacacheReader) skip(n int) error {
 
 		if err := r.mr.Skip(); err != nil {
 			if err == io.EOF {
-				return io.ErrUnexpectedEOF
+				err = io.ErrUnexpectedEOF
 			}
+			r.err = err
 			return err
 		}
 		if err := r.mr.Skip(); err != nil {
 			if err == io.EOF {
-				return io.ErrUnexpectedEOF
+				err = io.ErrUnexpectedEOF
 			}
+			r.err = err
 			return err
 		}
 		n--
