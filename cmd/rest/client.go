@@ -19,10 +19,12 @@ package rest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -104,6 +106,9 @@ func (c *Client) Call(ctx context.Context, method string, values url.Values, bod
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url.String()+method+querySep+values.Encode(), body)
 	if err != nil {
 		return nil, &NetworkError{err}
+	}
+	if strings.Contains(req.URL.String(), "storage") {
+		fmt.Println("REQ:", req.URL.String())
 	}
 	req.Header.Set("Authorization", "Bearer "+c.newAuthToken(req.URL.Query().Encode()))
 	req.Header.Set("X-Minio-Time", time.Now().UTC().Format(time.RFC3339))

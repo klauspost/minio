@@ -59,7 +59,7 @@ func Test_metaCacheEntries_merge(t *testing.T) {
 	a, b := org.shallowClone(), org.shallowClone()
 
 	// Merge b into a
-	a.merge(b)
+	a.merge(b, -1)
 	want := loadMetacacheSampleNames
 	got := a.entries().names()
 	if len(got) != len(want)*2 {
@@ -78,7 +78,7 @@ func Test_metaCacheEntries_dedupe(t *testing.T) {
 	a, b := org.shallowClone(), org.shallowClone()
 
 	// Merge b into a
-	a.merge(b)
+	a.merge(b, -1)
 	if a.deduplicate(nil) {
 		t.Fatal("deduplicate returned duplicate entries left")
 	}
@@ -100,10 +100,10 @@ func Test_metaCacheEntries_dedupe2(t *testing.T) {
 	}
 
 	// Merge b into a
-	a.merge(b)
-	if a.deduplicate(func(existing, other []byte) (replace bool) {
-		a := bytes.Equal(existing, testMarker)
-		b := bytes.Equal(other, testMarker)
+	a.merge(b, -1)
+	if a.deduplicate(func(existing, other *metaCacheEntry) (replace bool) {
+		a := bytes.Equal(existing.metadata, testMarker)
+		b := bytes.Equal(other.metadata, testMarker)
 		if a == b {
 			t.Fatal("got same number of testmarkers, only one should be given", a, b)
 		}

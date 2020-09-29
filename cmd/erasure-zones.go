@@ -23,6 +23,7 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -1258,6 +1259,7 @@ func (z *erasureZones) listObjectVersions(ctx context.Context, bucket, prefix, m
 	}
 
 	if delimiter != SlashSeparator && delimiter != "" {
+		// TODO: Could be lifted with some testing.
 		return loi, NotImplemented{}
 	}
 
@@ -1267,31 +1269,73 @@ func (z *erasureZones) listObjectVersions(ctx context.Context, bucket, prefix, m
 		recursive = false
 	}
 
-	zonesEntryChs := make([][]FileInfoVersionsCh, 0, len(z.zones))
-	zonesEndWalkCh := make([]chan struct{}, 0, len(z.zones))
-	zonesListTolerancePerSet := make([]int, 0, len(z.zones))
+	opts := listPathOptions{
+		ID:          mustGetUUID(),
+		Bucket:      bucket,
+		BaseDir:     path.Dir(prefix),
+		Prefix:      prefix,
+		Marker:      marker,
+		Limit:       maxKeys + 1,
+		InclDeleted: true,
+		Recursive:   recursive,
+		Separator:   delimiter,
+	}
+	if len(opts.BaseDir) > 0 {
+		opts.BaseDir += slashSeparator
+	}
+	var merged metaCacheEntriesSorted
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	var errs []error
+	mu.Lock()
 	for _, zone := range z.zones {
-		entryChs, endWalkCh := zone.poolVersions.Release(listParams{bucket, recursive, marker, prefix})
-		if entryChs == nil {
-			endWalkCh = make(chan struct{})
-			entryChs = zone.startMergeWalksVersionsN(ctx, bucket, prefix, marker, recursive, endWalkCh, zone.setDriveCount)
+		for _, set := range zone.sets {
+			wg.Add(1)
+			go func(i int, set *erasureObjects) {
+				defer wg.Done()
+				e, err := set.listPath(ctx, opts)
+				mu.Lock()
+				defer mu.Unlock()
+				errs[i] = err
+				fmt.Println("set returned:", e.len(), err)
+				merged.merge(e, maxKeys+1)
+				// Resolve non-trivial conflicts
+				merged.deduplicate(func(existing, other *metaCacheEntry) (replace bool) {
+					if existing.isDir() {
+						return false
+					}
+					eFIV, err := existing.fileInfo(bucket)
+					if err != nil {
+						return true
+					}
+					oFIV, err := existing.fileInfo(bucket)
+					if err != nil {
+						return false
+					}
+					return oFIV.ModTime.After(eFIV.ModTime)
+				})
+			}(len(errs), set)
+			errs = append(errs, nil)
 		}
-		zonesEntryChs = append(zonesEntryChs, entryChs)
-		zonesEndWalkCh = append(zonesEndWalkCh, endWalkCh)
-		zonesListTolerancePerSet = append(zonesListTolerancePerSet, zone.listTolerancePerSet)
 	}
-
-	entries := mergeZonesEntriesVersionsCh(zonesEntryChs, maxKeys, zonesListTolerancePerSet)
-	if len(entries.FilesVersions) == 0 {
-		return loi, nil
+	mu.Unlock()
+	wg.Wait()
+	for _, err := range errs {
+		if err == nil {
+			continue
+		}
+		if err != io.EOF {
+			return loi, err
+		}
 	}
+	loi.IsTruncated = merged.len() > maxKeys
+	merged.truncate(maxKeys)
+	entries := merged.fileInfoVersions(bucket)
 
-	loi.IsTruncated = entries.IsTruncated
-	if loi.IsTruncated {
-		loi.NextMarker = entries.FilesVersions[len(entries.FilesVersions)-1].Name
-	}
+	fmt.Println("merged:", merged.len())
 
-	for _, entry := range entries.FilesVersions {
+	//entries := mergeZonesEntriesVersionsCh(zonesEntryChs, maxKeys, zonesListTolerancePerSet)
+	for _, entry := range entries {
 		for _, version := range entry.Versions {
 			objInfo := version.ToObjectInfo(bucket, entry.Name)
 			if HasSuffix(objInfo.Name, SlashSeparator) && !recursive {
@@ -1301,11 +1345,10 @@ func (z *erasureZones) listObjectVersions(ctx context.Context, bucket, prefix, m
 			loi.Objects = append(loi.Objects, objInfo)
 		}
 	}
+	fmt.Println("objs:", len(loi.Objects))
+
 	if loi.IsTruncated {
-		for i, zone := range z.zones {
-			zone.poolVersions.Set(listParams{bucket, recursive, loi.NextMarker, prefix}, zonesEntryChs[i],
-				zonesEndWalkCh[i])
-		}
+		loi.NextMarker = loi.Objects[len(loi.Objects)-1].Name
 	}
 	return loi, nil
 }

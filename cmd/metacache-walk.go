@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"net/http"
@@ -31,6 +32,8 @@ type WalkDirOptions struct {
 // WalkDir will traverse a directory and return all entries found.
 // On success a sorted meta cache stream will be returned.
 func (s *xlStorage) WalkDir(ctx context.Context, opts WalkDirOptions, wr io.Writer) error {
+	fmt.Println("walking with basedir", opts.BaseDir)
+
 	// It is possible to implement an unsorted version of this that returns entries out-of-order.
 	// The total processing time would be the same, but it will have a much faster time to first entry.
 	atomic.AddInt32(&s.activeIOCount, 1)
@@ -62,6 +65,7 @@ func (s *xlStorage) WalkDir(ctx context.Context, opts WalkDirOptions, wr io.Writ
 			return errFileNotFound
 		}
 	}
+	// Use a small block size to start sending quickly
 	w := newMetacacheWriter(wr, 16<<10)
 	defer w.Close()
 	out, err := w.stream()
@@ -72,6 +76,7 @@ func (s *xlStorage) WalkDir(ctx context.Context, opts WalkDirOptions, wr io.Writ
 
 	var scanDir func(path string) error
 	scanDir = func(current string) error {
+		fmt.Println("scandir:", current)
 		entries, err := s.ListDir(ctx, opts.Bucket, current, -1)
 		if err != nil {
 			// Folder could have gone away in-between
@@ -121,6 +126,7 @@ func (s *xlStorage) WalkDir(ctx context.Context, opts WalkDirOptions, wr io.Writ
 		dirStack := make([]string, 0, 5)
 		for _, entry := range entries {
 			meta := metaCacheEntry{name: PathJoin(current, entry)}
+
 			// If directory entry on stack before this, pop it now.
 			for len(dirStack) > 0 && dirStack[len(dirStack)-1] < meta.name {
 				pop := dirStack[len(dirStack)-1]
@@ -134,6 +140,7 @@ func (s *xlStorage) WalkDir(ctx context.Context, opts WalkDirOptions, wr io.Writ
 			}
 
 			// All objects will be returned as directories, there has been no object check yet.
+			// Check it by attempting to read metadata.
 			meta.metadata, err = ioutil.ReadFile(pathJoin(volumeDir, meta.name, xlStorageFormatFile))
 			switch {
 			case err == nil:
@@ -173,24 +180,28 @@ func (p *xlStorageDiskIDCheck) WalkDir(ctx context.Context, opts WalkDirOptions,
 // On success a meta cache stream will be returned, that should be closed when done.
 func (client *storageRESTClient) WalkDir(ctx context.Context, opts WalkDirOptions, wr io.Writer) error {
 	values := make(url.Values)
-	values.Set(storageRESTVolume, opts.BaseDir)
-	values.Set(storageRESTFilePath, opts.Bucket)
+	values.Set(storageRESTVolume, opts.Bucket)
+	values.Set(storageRESTFilePath, opts.BaseDir)
 	values.Set(storageRESTRecursive, strconv.FormatBool(opts.Recursive))
 	respBody, err := client.call(ctx, storageRESTMethodWalkDir, values, nil, -1)
 	if err != nil {
+		logger.LogIf(ctx, err)
 		return err
 	}
 	rc, err := waitForHTTPResponseCloser(respBody)
 	if err != nil {
+		logger.LogIf(ctx, err)
 		return err
 	}
 	defer rc.Close()
 	_, err = io.Copy(wr, respBody)
+	logger.LogIf(ctx, err)
 	return err
 }
 
 // WalkDirHandler - remote caller to list files and folders in a requested directory path.
 func (s *storageRESTServer) WalkDirHandler(w http.ResponseWriter, r *http.Request) {
+	fmt.Println("YOU DID FIND ME")
 	if !s.IsValid(w, r) {
 		return
 	}
@@ -205,4 +216,5 @@ func (s *storageRESTServer) WalkDirHandler(w http.ResponseWriter, r *http.Reques
 	}
 	done(nil)
 	logger.LogIf(r.Context(), s.storage.WalkDir(r.Context(), WalkDirOptions{Bucket: volume, BaseDir: dirPath, Recursive: recursive}, w))
+	// FIXME: WE NEED TO RETURN ERRORS!
 }

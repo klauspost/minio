@@ -60,7 +60,7 @@ func (e *metaCacheEntry) isLatestDeletemarker() bool {
 	if err := xlMeta.Load(e.metadata); err != nil || len(xlMeta.Versions) == 0 {
 		return true
 	}
-	return xlMeta.Versions[len(xlMeta.Versions)].Type == DeleteType
+	return xlMeta.Versions[len(xlMeta.Versions)-1].Type == DeleteType
 }
 
 // fileInfo returns the decoded metadata.
@@ -267,24 +267,35 @@ func (m *metaCacheEntriesSorted) forwardTo(s string) {
 }
 
 // merge will merge other into m.
-// If the same entries exists in both the entries from m will be placed first.
+// If the same entries exists in both and metadata matches only one is added,
+// otherwise the entry from m will be placed first.
 // Operation time is expected to be O(n+m).
-func (m *metaCacheEntriesSorted) merge(other metaCacheEntriesSorted) {
+func (m *metaCacheEntriesSorted) merge(other metaCacheEntriesSorted, limit int) {
 	merged := make(metaCacheEntries, 0, m.len()+other.len())
 	a := m.entries()
 	b := other.entries()
 	for len(a) > 0 && len(b) > 0 {
-		if a[0].name <= b[0].name {
+		if a[0].name == b[0].name && bytes.Equal(a[0].metadata, b[0].metadata) {
+			// Same, discard one.
+			merged = append(merged, a[0])
+			a = a[1:]
+			b = b[1:]
+		} else if a[0].name < b[0].name {
 			merged = append(merged, a[0])
 			a = a[1:]
 		} else {
 			merged = append(merged, b[0])
 			b = b[1:]
 		}
+		if limit > 0 && len(merged) >= limit {
+			break
+		}
 	}
 	// Append anything left.
-	merged = append(merged, a...)
-	merged = append(merged, b...)
+	if limit > 0 && len(merged) < limit {
+		merged = append(merged, a...)
+		merged = append(merged, b...)
+	}
 	m.o = merged
 }
 
@@ -364,6 +375,16 @@ func (m *metaCacheEntriesSorted) filterRecursiveEntries(prefix, separator string
 	m.o = dst
 }
 
+// truncate the number of entries to maximum n.
+func (m *metaCacheEntriesSorted) truncate(n int) {
+	if m == nil {
+		return
+	}
+	if len(m.o) > n {
+		m.o = m.o[:n]
+	}
+}
+
 // len returns the number of objects and prefix dirs in m.
 func (m *metaCacheEntriesSorted) len() int {
 	if m == nil {
@@ -385,12 +406,13 @@ func (m *metaCacheEntriesSorted) entries() metaCacheEntries {
 // The function should return whether the existing entry should be replaced with other.
 // If no compareMeta is provided duplicates may be left.
 // This is indicated by the returned boolean.
-func (m *metaCacheEntriesSorted) deduplicate(compareMeta func(existing, other []byte) (replace bool)) (dupesLeft bool) {
+func (m *metaCacheEntriesSorted) deduplicate(compareMeta func(existing, other *metaCacheEntry) (replace bool)) (dupesLeft bool) {
 	dst := m.o[:0]
-	for _, obj := range m.o {
+	for j := range m.o {
 		found := false
+		obj := &m.o[j]
 		for i := len(dst) - 1; i >= 0; i++ {
-			existing := dst[i]
+			existing := &dst[i]
 			if existing.name != obj.name {
 				break
 			}
@@ -399,8 +421,8 @@ func (m *metaCacheEntriesSorted) deduplicate(compareMeta func(existing, other []
 				break
 			}
 			if compareMeta != nil {
-				if compareMeta(existing.metadata, obj.metadata) {
-					dst[i] = obj
+				if compareMeta(existing, obj) {
+					dst[i] = *obj
 				}
 				found = true
 				break
@@ -411,7 +433,7 @@ func (m *metaCacheEntriesSorted) deduplicate(compareMeta func(existing, other []
 			continue
 		}
 		if !found {
-			dst = append(dst, obj)
+			dst = append(dst, *obj)
 		}
 	}
 	m.o = dst
