@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"runtime"
 	"strings"
 	"time"
 
@@ -86,7 +87,7 @@ func mustReplicateWeb(ctx context.Context, r *http.Request, bucket, object strin
 
 // mustReplicate returns true if object meets replication criteria.
 func mustReplicate(ctx context.Context, r *http.Request, bucket, object string, meta map[string]string, replStatus string) bool {
-	if s3Err := isPutActionAllowed(getRequestAuthType(r), bucket, object, r, iampolicy.GetReplicationConfigurationAction); s3Err != ErrNone {
+	if s3Err := isPutActionAllowed(getRequestAuthType(r), bucket, "", r, iampolicy.GetReplicationConfigurationAction); s3Err != ErrNone {
 		return false
 	}
 	return mustReplicater(ctx, r, bucket, object, meta, replStatus)
@@ -293,29 +294,56 @@ func (r *replicationState) queueReplicaTask(oi ObjectInfo) {
 	}
 }
 
-var globalReplicationState *replicationState
+var (
+	globalReplicationState *replicationState
+	// TODO: currently keeping it conservative
+	// but eventually can be tuned in future,
+	// take only half the CPUs for replication
+	// conservatively.
+	globalReplicationConcurrent = runtime.GOMAXPROCS(0) / 2
+)
 
 func newReplicationState() *replicationState {
-	return &replicationState{
-		// TODO: currently keeping it conservative
-		// but eventually can be tuned in future
-		replicaCh: make(chan ObjectInfo, 100),
+
+	// fix minimum concurrent replication to 1 for single CPU setup
+	if globalReplicationConcurrent == 0 {
+		globalReplicationConcurrent = 1
 	}
+	rs := &replicationState{
+		replicaCh: make(chan ObjectInfo, globalReplicationConcurrent*2),
+	}
+	go func() {
+		<-GlobalContext.Done()
+		close(rs.replicaCh)
+	}()
+	return rs
+}
+
+// addWorker creates a new worker to process tasks
+func (r *replicationState) addWorker(ctx context.Context, objectAPI ObjectLayer) {
+	// Add a new worker.
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case oi, ok := <-r.replicaCh:
+				if !ok {
+					return
+				}
+				replicateObject(ctx, oi, objectAPI)
+			}
+		}
+	}()
 }
 
 func initBackgroundReplication(ctx context.Context, objectAPI ObjectLayer) {
 	if globalReplicationState == nil {
 		return
 	}
-	go func() {
-		defer close(globalReplicationState.replicaCh)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case oi := <-globalReplicationState.replicaCh:
-				replicateObject(ctx, oi, objectAPI)
-			}
-		}
-	}()
+
+	// Start with globalReplicationConcurrent.
+	for i := 0; i < globalReplicationConcurrent; i++ {
+		globalReplicationState.addWorker(ctx, objectAPI)
+	}
 }

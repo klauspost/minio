@@ -66,6 +66,9 @@ type erasureSets struct {
 	// Distributed locker clients.
 	erasureLockers setsDsyncLockers
 
+	// Distributed lock owner (constant per running instance).
+	erasureLockOwner string
+
 	// List of endpoints provided on the command line.
 	endpoints Endpoints
 
@@ -228,6 +231,11 @@ func (s *erasureSets) connectDisks() {
 				return
 			}
 			disk.SetDiskID(format.Erasure.This)
+			if endpoint.IsLocal && disk.Healing() {
+				globalBackgroundHealState.pushHealLocalDisks(disk.Endpoint())
+				logger.Info(fmt.Sprintf("Found the drive %s which needs healing, attempting to heal...", disk))
+			}
+
 			s.erasureDisksMu.Lock()
 			if s.erasureDisks[setIndex][diskIndex] != nil {
 				s.erasureDisks[setIndex][diskIndex].Close()
@@ -261,11 +269,11 @@ func (s *erasureSets) monitorAndConnectEndpoints(ctx context.Context, monitorInt
 	}
 }
 
-func (s *erasureSets) GetLockers(setIndex int) func() []dsync.NetLocker {
-	return func() []dsync.NetLocker {
+func (s *erasureSets) GetLockers(setIndex int) func() ([]dsync.NetLocker, string) {
+	return func() ([]dsync.NetLocker, string) {
 		lockers := make([]dsync.NetLocker, s.setDriveCount)
 		copy(lockers, s.erasureLockers[setIndex])
-		return lockers
+		return lockers, s.erasureLockOwner
 	}
 }
 
@@ -308,11 +316,12 @@ func newErasureSets(ctx context.Context, endpoints Endpoints, storageDisks []Sto
 		sets:                make([]*erasureObjects, setCount),
 		erasureDisks:        make([][]StorageAPI, setCount),
 		erasureLockers:      make([][]dsync.NetLocker, setCount),
+		erasureLockOwner:    mustGetUUID(),
 		endpoints:           endpoints,
 		endpointStrings:     endpointStrings,
 		setCount:            setCount,
 		setDriveCount:       setDriveCount,
-		listTolerancePerSet: setDriveCount / 2,
+		listTolerancePerSet: 3, // Expect 3 good entries across disks.
 		format:              format,
 		disksConnectEvent:   make(chan diskConnectInfo),
 		distributionAlgo:    format.Erasure.DistributionAlgo,
@@ -665,7 +674,7 @@ func undoDeleteBucketSets(ctx context.Context, bucket string, sets []*erasureObj
 // that all buckets are present on all sets.
 func (s *erasureSets) ListBuckets(ctx context.Context) (buckets []BucketInfo, err error) {
 	// Always lists from the same set signified by the empty string.
-	return s.getHashedSet("").ListBuckets(ctx)
+	return s.ListBucketsHeal(ctx)
 }
 
 // --- Object Operations ---
@@ -1381,7 +1390,7 @@ func (s *erasureSets) HealFormat(ctx context.Context, dryRun bool) (res madmin.H
 		}
 
 		// Save formats `format.json` across all disks.
-		if err = saveFormatErasureAll(ctx, storageDisks, tmpNewFormats); err != nil {
+		if err = saveFormatErasureAllWithErrs(ctx, storageDisks, sErrs, tmpNewFormats); err != nil {
 			return madmin.HealResultItem{}, err
 		}
 
@@ -1465,7 +1474,7 @@ func (s *erasureSets) ListBucketsHeal(ctx context.Context) ([]BucketInfo, error)
 	var healBuckets = map[string]VolInfo{}
 	for _, set := range s.sets {
 		// lists all unique buckets across drives.
-		if err := listAllBuckets(set.getDisks(), healBuckets); err != nil {
+		if err := listAllBuckets(ctx, set.getDisks(), healBuckets); err != nil {
 			return nil, err
 		}
 	}

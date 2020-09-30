@@ -299,19 +299,19 @@ func (z *erasureZones) CrawlAndGetDataUsage(ctx context.Context, bf *bloomFilter
 
 	// Collect for each set in zones.
 	for _, z := range z.zones {
+		buckets, err := z.ListBuckets(ctx)
+		if err != nil {
+			return err
+		}
+		// Add new buckets.
+		for _, b := range buckets {
+			if _, ok := knownBuckets[b.Name]; ok {
+				continue
+			}
+			allBuckets = append(allBuckets, b)
+			knownBuckets[b.Name] = struct{}{}
+		}
 		for _, erObj := range z.sets {
-			// Add new buckets.
-			buckets, err := erObj.ListBuckets(ctx)
-			if err != nil {
-				return err
-			}
-			for _, b := range buckets {
-				if _, ok := knownBuckets[b.Name]; ok {
-					continue
-				}
-				allBuckets = append(allBuckets, b)
-				knownBuckets[b.Name] = struct{}{}
-			}
 			wg.Add(1)
 			results = append(results, dataUsageCache{})
 			go func(i int, erObj *erasureObjects) {
@@ -662,7 +662,7 @@ func (z *erasureZones) listObjectsNonSlash(ctx context.Context, bucket, prefix, 
 
 	for _, zone := range z.zones {
 		zonesEntryChs = append(zonesEntryChs,
-			zone.startMergeWalksN(ctx, bucket, prefix, "", true, endWalkCh, zone.setDriveCount, false))
+			zone.startMergeWalksN(ctx, bucket, prefix, "", true, endWalkCh, zone.listTolerancePerSet, false))
 		zonesListTolerancePerSet = append(zonesListTolerancePerSet, zone.listTolerancePerSet)
 	}
 
@@ -781,7 +781,7 @@ func (z *erasureZones) listObjectsSplunk(ctx context.Context, bucket, prefix, ma
 		entryChs, endWalkCh := zone.poolSplunk.Release(listParams{bucket, recursive, marker, prefix})
 		if entryChs == nil {
 			endWalkCh = make(chan struct{})
-			entryChs = zone.startMergeWalksN(ctx, bucket, prefix, marker, recursive, endWalkCh, zone.setDriveCount, true)
+			entryChs = zone.startMergeWalksN(ctx, bucket, prefix, marker, recursive, endWalkCh, zone.listTolerancePerSet, true)
 		}
 		zonesEntryChs = append(zonesEntryChs, entryChs)
 		zonesEndWalkCh = append(zonesEndWalkCh, endWalkCh)
@@ -873,7 +873,7 @@ func (z *erasureZones) listObjects(ctx context.Context, bucket, prefix, marker, 
 		entryChs, endWalkCh := zone.pool.Release(listParams{bucket, recursive, marker, prefix})
 		if entryChs == nil {
 			endWalkCh = make(chan struct{})
-			entryChs = zone.startMergeWalksN(ctx, bucket, prefix, marker, recursive, endWalkCh, zone.setDriveCount, false)
+			entryChs = zone.startMergeWalksN(ctx, bucket, prefix, marker, recursive, endWalkCh, zone.listTolerancePerSet, false)
 		}
 		zonesEntryChs = append(zonesEntryChs, entryChs)
 		zonesEndWalkCh = append(zonesEndWalkCh, endWalkCh)

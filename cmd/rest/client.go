@@ -32,8 +32,8 @@ import (
 	xnet "github.com/minio/minio/pkg/net"
 )
 
-// DefaultRESTTimeout - default RPC timeout is one minute.
-const DefaultRESTTimeout = 1 * time.Minute
+// DefaultRESTTimeout - default RPC timeout is 15 seconds.
+const DefaultRESTTimeout = 15 * time.Second
 
 const (
 	offline = iota
@@ -117,7 +117,7 @@ func (c *Client) Call(ctx context.Context, method string, values url.Values, bod
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		if xnet.IsNetworkOrHostDown(err) || errors.Is(err, context.DeadlineExceeded) {
+		if xnet.IsNetworkOrHostDown(err) {
 			c.MarkOffline()
 		}
 		return nil, &NetworkError{err}
@@ -146,6 +146,9 @@ func (c *Client) Call(ctx context.Context, method string, values url.Values, bod
 		// Limit the ReadAll(), just in case, because of a bug, the server responds with large data.
 		b, err := ioutil.ReadAll(io.LimitReader(resp.Body, c.MaxErrResponseSize))
 		if err != nil {
+			if xnet.IsNetworkOrHostDown(err) {
+				c.MarkOffline()
+			}
 			return nil, err
 		}
 		if len(b) > 0 {

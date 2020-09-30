@@ -88,7 +88,10 @@ func registerAPIRouter(router *mux.Router) {
 	for _, domainName := range globalDomainNames {
 		if IsKubernetes() {
 			routers = append(routers, apiRouter.MatcherFunc(func(r *http.Request, match *mux.RouteMatch) bool {
-				host, _, _ := net.SplitHostPort(getHost(r))
+				host, _, err := net.SplitHostPort(getHost(r))
+				if err != nil {
+					host = r.Host
+				}
 				// Make sure to skip matching minio.<domain>` this is
 				// specifically meant for operator/k8s deployment
 				// The reason we need to skip this is for a special
@@ -329,8 +332,8 @@ func registerAPIRouter(router *mux.Router) {
 		maxClients(collectAPIStats("listbuckets", httpTraceAll(api.ListBucketsHandler))))
 
 	// If none of the routes match add default error handler routes
-	apiRouter.NotFoundHandler = http.HandlerFunc(collectAPIStats("notfound", httpTraceAll(errorResponseHandler)))
-	apiRouter.MethodNotAllowedHandler = http.HandlerFunc(collectAPIStats("methodnotallowed", httpTraceAll(methodNotAllowedHandler)))
+	apiRouter.NotFoundHandler = collectAPIStats("notfound", httpTraceAll(errorResponseHandler))
+	apiRouter.MethodNotAllowedHandler = collectAPIStats("methodnotallowed", httpTraceAll(methodNotAllowedHandler))
 
 }
 

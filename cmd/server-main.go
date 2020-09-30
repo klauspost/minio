@@ -199,8 +199,11 @@ func initSafeMode(ctx context.Context, newObject ObjectLayer) (err error) {
 	// appropriately. This is also true for rotation of encrypted
 	// content.
 	txnLk := newObject.NewNSLock(retryCtx, minioMetaBucket, minioConfigPrefix+"/transaction.lock")
+	var locked bool
 	defer func(txnLk RWLocker) {
-		txnLk.Unlock()
+		if locked {
+			txnLk.Unlock()
+		}
 
 		if err != nil {
 			var cerr config.Err
@@ -253,6 +256,9 @@ func initSafeMode(ctx context.Context, newObject ObjectLayer) (err error) {
 			continue
 		}
 
+		// locked successful
+		locked = true
+
 		// These messages only meant primarily for distributed setup, so only log during distributed setup.
 		if globalIsDistErasure {
 			logger.Info("Waiting for all MinIO sub-systems to be initialized.. lock acquired")
@@ -283,6 +289,7 @@ func initSafeMode(ctx context.Context, newObject ObjectLayer) (err error) {
 			isErrBucketNotFound(err) {
 			logger.Info("Waiting for all MinIO sub-systems to be initialized.. possible cause (%v)", err)
 			txnLk.Unlock() // Unlock the transaction lock and allow other nodes to acquire the lock if possible.
+			locked = false
 			continue
 		}
 
@@ -305,30 +312,12 @@ func initAllSubsystems(ctx context.Context, newObject ObjectLayer) (err error) {
 	// are modifying this code that you do so, if and when
 	// you want to add extra context to your error. This
 	// ensures top level retry works accordingly.
+	// List buckets to heal, and be re-used for loading configs.
 	var buckets []BucketInfo
-	if globalIsDistErasure || globalIsErasure {
-		// List buckets to heal, and be re-used for loading configs.
+	if globalIsErasure {
 		buckets, err = newObject.ListBucketsHeal(ctx)
 		if err != nil {
 			return fmt.Errorf("Unable to list buckets to heal: %w", err)
-		}
-		// Attempt a heal if possible and re-use the bucket names
-		// to reload their config.
-		wquorum := &InsufficientWriteQuorum{}
-		rquorum := &InsufficientReadQuorum{}
-		for _, bucket := range buckets {
-			if err = newObject.MakeBucketWithLocation(ctx, bucket.Name, BucketOptions{}); err != nil {
-				if errors.As(err, &wquorum) || errors.As(err, &rquorum) {
-					// Return the error upwards for the caller to retry.
-					return fmt.Errorf("Unable to heal bucket: %w", err)
-				}
-				if _, ok := err.(BucketExists); !ok {
-					// ignore any other error and log for investigation.
-					logger.LogIf(ctx, err)
-					continue
-				}
-				// Bucket already exists, nothing that needs to be done.
-			}
 		}
 	} else {
 		buckets, err = newObject.ListBuckets(ctx)
@@ -349,7 +338,7 @@ func initAllSubsystems(ctx context.Context, newObject ObjectLayer) (err error) {
 	}
 
 	// Initialize bucket metadata sub-system.
-	if err := globalBucketMetadataSys.Init(ctx, buckets, newObject); err != nil {
+	if err = globalBucketMetadataSys.Init(ctx, buckets, newObject); err != nil {
 		return fmt.Errorf("Unable to initialize bucket metadata sub-system: %w", err)
 	}
 
@@ -475,11 +464,11 @@ func serverMain(ctx *cli.Context) {
 	}
 
 	newObject, err := newObjectLayer(GlobalContext, globalEndpoints)
-	logger.SetDeploymentID(globalDeploymentID)
 	if err != nil {
-		globalHTTPServer.Shutdown()
-		logger.Fatal(err, "Unable to initialize backend")
+		logFatalErrs(err, Endpoint{}, true)
 	}
+
+	logger.SetDeploymentID(globalDeploymentID)
 
 	// Once endpoints are finalized, initialize the new object api in safe mode.
 	globalObjLayerMutex.Lock()

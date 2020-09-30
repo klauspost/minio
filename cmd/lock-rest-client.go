@@ -23,6 +23,7 @@ import (
 	"errors"
 	"io"
 	"net/url"
+	"time"
 
 	"github.com/minio/minio/cmd/http"
 	xhttp "github.com/minio/minio/cmd/http"
@@ -86,6 +87,7 @@ func (client *lockRESTClient) Close() error {
 func (client *lockRESTClient) restCall(ctx context.Context, call string, args dsync.LockArgs) (reply bool, err error) {
 	values := url.Values{}
 	values.Set(lockRESTUID, args.UID)
+	values.Set(lockRESTOwner, args.Owner)
 	values.Set(lockRESTSource, args.Source)
 	var buffer bytes.Buffer
 	for _, resource := range args.Resources {
@@ -152,7 +154,7 @@ func newlockRESTClient(endpoint Endpoint) *lockRESTClient {
 		}
 	}
 
-	trFn := newInternodeHTTPTransport(tlsConfig, rest.DefaultRESTTimeout)
+	trFn := newInternodeHTTPTransport(tlsConfig, 10*time.Second)
 	restClient := rest.NewClient(serverURL, trFn, newAuthToken)
 	restClient.HealthCheckFn = func() bool {
 		ctx, cancel := context.WithTimeout(GlobalContext, restClient.HealthCheckTimeout)

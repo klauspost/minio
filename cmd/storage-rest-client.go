@@ -29,7 +29,6 @@ import (
 	"path"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/minio/minio/cmd/http"
 	xhttp "github.com/minio/minio/cmd/http"
@@ -75,6 +74,8 @@ func toStorageErr(err error) error {
 		return errVolumeExists
 	case errFileNotFound.Error():
 		return errFileNotFound
+	case errFileVersionNotFound.Error():
+		return errFileVersionNotFound
 	case errFileNameTooLong.Error():
 		return errFileNameTooLong
 	case errFileAccessDenied.Error():
@@ -153,6 +154,14 @@ func (client *storageRESTClient) IsLocal() bool {
 
 func (client *storageRESTClient) Hostname() string {
 	return client.endpoint.Host
+}
+
+func (client *storageRESTClient) Endpoint() Endpoint {
+	return client.endpoint
+}
+
+func (client *storageRESTClient) Healing() bool {
+	return false
 }
 
 func (client *storageRESTClient) CrawlAndGetDataUsage(ctx context.Context, cache dataUsageCache) (dataUsageCache, error) {
@@ -667,7 +676,6 @@ func newStorageRESTClient(endpoint Endpoint) *storageRESTClient {
 
 	trFn := newInternodeHTTPTransport(tlsConfig, rest.DefaultRESTTimeout)
 	restClient := rest.NewClient(serverURL, trFn, newAuthToken)
-	restClient.HealthCheckInterval = 500 * time.Millisecond
 	restClient.HealthCheckFn = func() bool {
 		ctx, cancel := context.WithTimeout(GlobalContext, restClient.HealthCheckTimeout)
 		// Instantiate a new rest client for healthcheck

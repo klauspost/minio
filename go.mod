@@ -40,7 +40,7 @@ require (
 	github.com/klauspost/pgzip v1.2.1
 	github.com/klauspost/readahead v1.3.1
 	github.com/klauspost/reedsolomon v1.9.9
-	github.com/lib/pq v1.7.0
+	github.com/lib/pq v1.8.0
 	github.com/mattn/go-colorable v0.1.4
 	github.com/mattn/go-ieproxy v0.0.1 // indirect
 	github.com/mattn/go-isatty v0.0.8
@@ -82,7 +82,7 @@ require (
 	golang.org/x/crypto v0.0.0-20200820211705-5c72a883971a
 	golang.org/x/net v0.0.0-20200904194848-62affa334b73
 	golang.org/x/sys v0.0.0-20200915084602-288bc346aa39
-	golang.org/x/tools v0.0.0-20200814172026-c4923e618c08 // indirect
+	golang.org/x/tools v0.0.0-20200925191224-5d1fdd8fa346 // indirect
 	google.golang.org/api v0.5.0
 	gopkg.in/jcmturner/gokrb5.v7 v7.3.0
 	gopkg.in/ldap.v3 v3.0.3
