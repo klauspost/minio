@@ -23,7 +23,6 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
-	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -1267,22 +1266,28 @@ func (z *erasureZones) listObjectVersions(ctx context.Context, bucket, prefix, m
 	recursive := true
 	if delimiter == SlashSeparator {
 		recursive = false
+	} else if delimiter == "" {
+		delimiter = slashSeparator
 	}
 
+	marker, listID := parseMarker(marker)
+	createNew := listID == ""
+	if listID == "" {
+		listID = mustGetUUID()
+	}
 	opts := listPathOptions{
-		ID:          mustGetUUID(),
+		ID:          listID,
 		Bucket:      bucket,
-		BaseDir:     path.Dir(prefix),
+		BaseDir:     baseDirFromPrefix(prefix),
 		Prefix:      prefix,
 		Marker:      marker,
 		Limit:       maxKeys + 1,
 		InclDeleted: true,
 		Recursive:   recursive,
 		Separator:   delimiter,
+		Create:      createNew,
 	}
-	if len(opts.BaseDir) > 0 {
-		opts.BaseDir += slashSeparator
-	}
+
 	var merged metaCacheEntriesSorted
 	var mu sync.Mutex
 	var wg sync.WaitGroup
@@ -1297,7 +1302,7 @@ func (z *erasureZones) listObjectVersions(ctx context.Context, bucket, prefix, m
 				mu.Lock()
 				defer mu.Unlock()
 				errs[i] = err
-				fmt.Println("set returned:", e.len(), err)
+				//fmt.Println("set returned:", e.len(), err)
 				merged.merge(e, maxKeys+1)
 				// Resolve non-trivial conflicts
 				merged.deduplicate(func(existing, other *metaCacheEntry) (replace bool) {
@@ -1320,21 +1325,23 @@ func (z *erasureZones) listObjectVersions(ctx context.Context, bucket, prefix, m
 	}
 	mu.Unlock()
 	wg.Wait()
+	allAtEOF := true
 	for _, err := range errs {
 		if err == nil {
+			allAtEOF = false
 			continue
 		}
-		if err != io.EOF {
-			return loi, err
+		if err == io.EOF {
+			continue
 		}
+		return loi, err
 	}
-	loi.IsTruncated = merged.len() > maxKeys
+	loi.IsTruncated = merged.len() > maxKeys || !allAtEOF
 	merged.truncate(maxKeys)
 	entries := merged.fileInfoVersions(bucket)
 
-	fmt.Println("merged:", merged.len())
+	//fmt.Println("merged:", merged.len())
 
-	//entries := mergeZonesEntriesVersionsCh(zonesEntryChs, maxKeys, zonesListTolerancePerSet)
 	for _, entry := range entries {
 		for _, version := range entry.Versions {
 			objInfo := version.ToObjectInfo(bucket, entry.Name)
@@ -1345,11 +1352,12 @@ func (z *erasureZones) listObjectVersions(ctx context.Context, bucket, prefix, m
 			loi.Objects = append(loi.Objects, objInfo)
 		}
 	}
-	fmt.Println("objs:", len(loi.Objects))
 
 	if loi.IsTruncated {
-		loi.NextMarker = loi.Objects[len(loi.Objects)-1].Name
+		loi.NextMarker = encodeMarker(loi.Objects[len(loi.Objects)-1].Name, opts.ID)
 	}
+	fmt.Println("objs:", len(loi.Objects), loi.IsTruncated, loi.NextMarker)
+
 	return loi, nil
 }
 

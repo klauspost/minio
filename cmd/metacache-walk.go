@@ -1,3 +1,19 @@
+/*
+ * MinIO Cloud Storage, (C) 2020 MinIO, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package cmd
 
 import (
@@ -32,7 +48,7 @@ type WalkDirOptions struct {
 // WalkDir will traverse a directory and return all entries found.
 // On success a sorted meta cache stream will be returned.
 func (s *xlStorage) WalkDir(ctx context.Context, opts WalkDirOptions, wr io.Writer) error {
-	fmt.Println("walking with basedir", opts.BaseDir)
+	fmt.Println("WalkDir with basedir", opts.BaseDir, "and bucket", opts.Bucket)
 
 	// It is possible to implement an unsorted version of this that returns entries out-of-order.
 	// The total processing time would be the same, but it will have a much faster time to first entry.
@@ -91,6 +107,8 @@ func (s *xlStorage) WalkDir(ctx context.Context, opts WalkDirOptions, wr io.Writ
 				entries[i] = entries[i][:len(entry)-1]
 				continue
 			}
+			// Do do not retain the file.
+			entries[i] = ""
 
 			// If root was an object return it as such.
 			if HasSuffix(entry, xlStorageFormatFile) {
@@ -125,6 +143,9 @@ func (s *xlStorage) WalkDir(ctx context.Context, opts WalkDirOptions, wr io.Writ
 		sort.Strings(entries)
 		dirStack := make([]string, 0, 5)
 		for _, entry := range entries {
+			if entry == "" {
+				continue
+			}
 			meta := metaCacheEntry{name: PathJoin(current, entry)}
 
 			// If directory entry on stack before this, pop it now.
@@ -181,7 +202,7 @@ func (p *xlStorageDiskIDCheck) WalkDir(ctx context.Context, opts WalkDirOptions,
 func (client *storageRESTClient) WalkDir(ctx context.Context, opts WalkDirOptions, wr io.Writer) error {
 	values := make(url.Values)
 	values.Set(storageRESTVolume, opts.Bucket)
-	values.Set(storageRESTFilePath, opts.BaseDir)
+	values.Set(storageRESTDirPath, opts.BaseDir)
 	values.Set(storageRESTRecursive, strconv.FormatBool(opts.Recursive))
 	respBody, err := client.call(ctx, storageRESTMethodWalkDir, values, nil, -1)
 	if err != nil {
@@ -201,7 +222,6 @@ func (client *storageRESTClient) WalkDir(ctx context.Context, opts WalkDirOption
 
 // WalkDirHandler - remote caller to list files and folders in a requested directory path.
 func (s *storageRESTServer) WalkDirHandler(w http.ResponseWriter, r *http.Request) {
-	fmt.Println("YOU DID FIND ME")
 	if !s.IsValid(w, r) {
 		return
 	}

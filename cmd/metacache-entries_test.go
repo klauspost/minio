@@ -1,3 +1,19 @@
+/*
+ * MinIO Cloud Storage, (C) 2020 MinIO, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package cmd
 
 import (
@@ -176,5 +192,54 @@ func Test_metaCacheEntries_filterPrefix(t *testing.T) {
 	want := []string{"src/compress/bzip2/", "src/compress/bzip2/bit_reader.go", "src/compress/bzip2/bzip2.go", "src/compress/bzip2/bzip2_test.go", "src/compress/bzip2/huffman.go", "src/compress/bzip2/move_to_front.go", "src/compress/bzip2/testdata/", "src/compress/bzip2/testdata/Isaac.Newton-Opticks.txt.bz2", "src/compress/bzip2/testdata/e.txt.bz2", "src/compress/bzip2/testdata/fail-issue5747.bz2", "src/compress/bzip2/testdata/pass-random1.bin", "src/compress/bzip2/testdata/pass-random1.bz2", "src/compress/bzip2/testdata/pass-random2.bin", "src/compress/bzip2/testdata/pass-random2.bz2", "src/compress/bzip2/testdata/pass-sawtooth.bz2", "src/compress/bzip2/testdata/random.data.bz2"}
 	if !reflect.DeepEqual(want, got) {
 		t.Errorf("got unexpected result: %#v", got)
+	}
+}
+
+func Test_metaCacheEntry_isInDir(t *testing.T) {
+	tests := []struct {
+		testName string
+		entry    string
+		dir      string
+		sep      string
+		want     bool
+	}{
+		{
+			testName: "basic-file",
+			entry:    "src/file",
+			dir:      "src/",
+			sep:      slashSeparator,
+			want:     true,
+		},
+		{
+			testName: "basic-dir",
+			entry:    "src/dir/",
+			dir:      "src/",
+			sep:      slashSeparator,
+			want:     true,
+		},
+		{
+			testName: "deeper-file",
+			entry:    "src/dir/somewhere.ext",
+			dir:      "src/",
+			sep:      slashSeparator,
+			want:     false,
+		},
+		{
+			testName: "deeper-dir",
+			entry:    "src/dir/somewhere/",
+			dir:      "src/",
+			sep:      slashSeparator,
+			want:     false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.testName, func(t *testing.T) {
+			e := metaCacheEntry{
+				name: tt.entry,
+			}
+			if got := e.isInDir(tt.dir, tt.sep); got != tt.want {
+				t.Errorf("isInDir() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

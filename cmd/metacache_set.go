@@ -1,3 +1,19 @@
+/*
+ * MinIO Cloud Storage, (C) 2020 MinIO, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package cmd
 
 import (
@@ -5,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
@@ -47,6 +64,9 @@ type listPathOptions struct {
 
 	// Separator to use.
 	Separator string
+
+	// Create indicates that the lister should not attempt to load an existing cache.
+	Create bool
 }
 
 // gatherResults will collect all results on the input channel and filter results according to the options.
@@ -59,17 +79,20 @@ func (o *listPathOptions) gatherResults(in <-chan metaCacheEntry) func() metaCac
 	go func() {
 		defer wg.Done()
 		for entry := range in {
-			//fmt.Println("gather got:", entry.name)
 			if o.Limit > 0 && results.len() > o.Limit {
-				//fmt.Println("past limit")
 				continue
 			}
+			//fmt.Println("gather got:", entry.name)
 			if o.Marker != "" && entry.name < o.Marker {
 				//fmt.Println("pre marker")
 				continue
 			}
-			if o.Prefix != "" && !entry.isInDir(o.Prefix, o.Separator) {
-				//fmt.Println("not in dir")
+			if !strings.HasPrefix(entry.name, o.Prefix) {
+				//fmt.Println("not in prefix")
+				continue
+			}
+			if !o.Recursive && !entry.isInDir(o.Prefix, o.Separator) {
+				//fmt.Println("not in dir", o.Prefix, o.Separator)
 				continue
 			}
 			if !o.InclDeleted && entry.isObject() {
@@ -78,6 +101,7 @@ func (o *listPathOptions) gatherResults(in <-chan metaCacheEntry) func() metaCac
 					continue
 				}
 			}
+			//fmt.Println("adding...")
 			results.o = append(results.o, entry)
 		}
 	}()
@@ -89,7 +113,7 @@ func (o *listPathOptions) gatherResults(in <-chan metaCacheEntry) func() metaCac
 
 // objectPath returns the object path of the cache.
 func (o *listPathOptions) objectPath() string {
-	return pathJoin("buckets", o.Bucket, ".cache-"+o.ID+".s2")
+	return pathJoin("buckets", o.Bucket, ".metacache", o.ID+".s2")
 }
 
 // filter will apply the options and return the number of objects requested by the limit.
@@ -101,24 +125,11 @@ func (r *metacacheReader) filter(o listPathOptions) (entries metaCacheEntriesSor
 	if err != nil {
 		return entries, err
 	}
+	fmt.Println("forwarded to ", o.Prefix)
 	if o.Marker != "" {
 		err = r.forwardTo(o.Marker)
 		if err != nil {
 			return entries, err
-		}
-
-		// Skip as long as marker matches exactly.
-		for {
-			obj, err := r.peek()
-			if err != nil {
-				return entries, err
-			}
-			if obj.name == o.Marker {
-				err = r.skip(1)
-				if err != nil {
-					return entries, err
-				}
-			}
 		}
 	}
 	// Filter
@@ -139,6 +150,9 @@ func (r *metacacheReader) filter(o listPathOptions) (entries metaCacheEntriesSor
 		return entries, err
 	}
 
+	fmt.Println("returning", o.Limit, "results")
+	defer fmt.Println("returned")
+
 	// We should not need to filter more.
 	return r.readN(o.Limit, o.InclDeleted)
 }
@@ -146,53 +160,37 @@ func (r *metacacheReader) filter(o listPathOptions) (entries metaCacheEntriesSor
 // Will return io.EOF if continuing would not yield more results.
 func (er erasureObjects) listPath(ctx context.Context, o listPathOptions) (entries metaCacheEntriesSorted, err error) {
 	startTime := time.Now()
-	fmt.Println("set listing bucket:", o.Bucket, "basedir:", o.BaseDir)
+	//fmt.Println("set listing bucket:", o.Bucket, "basedir:", o.BaseDir)
 	// See if we have the listing stored.
 	// Not really a loop, we break out if we are unable read and need to fall back.
-	for {
+	for !o.Create {
 		r, w := io.Pipe()
-		err := er.getObject(ctx, minioMetaBucket, o.objectPath(), 0, -1, w, "", ObjectOptions{})
-		if err != nil {
-			break
-		}
+		go func() {
+			err := er.getObject(ctx, minioMetaBucket, o.objectPath(), 0, -1, w, "", ObjectOptions{})
+			w.CloseWithError(err)
+		}()
+
 		mr, err := newMetacacheReader(r)
-		if err != nil {
+		_, err2 := mr.peek()
+		if err != nil || err2 != nil {
+			r.Close()
 			break
 		}
+		defer r.Close()
 		defer mr.Close()
 		return mr.filter(o)
 	}
 
 	// We need to ask disks.
-
-	// Don't use disks that are healing
-	healing, err := getAggregatedBackgroundHealState(ctx)
-	if err != nil {
-		logger.LogIf(ctx, err)
-	}
-	healDisks := make(map[string]struct{}, len(healing.HealDisks))
-	for _, disk := range healing.HealDisks {
-		healDisks[disk] = struct{}{}
-	}
-
 	var disks []StorageAPI
 	for _, d := range er.getLoadBalancedDisks() {
 		if d == nil || !d.IsOnline() {
-			continue
-		}
-		di, err := d.DiskInfo(ctx)
-		if err != nil {
-			logger.LogIf(ctx, err)
-			continue
-		}
-		if _, ok := healDisks[di.Endpoint]; ok {
 			continue
 		}
 		disks = append(disks, d)
 	}
 
 	const askDisks = 3
-
 	if len(disks) < askDisks {
 		err = InsufficientReadQuorum{}
 		return
@@ -222,7 +220,7 @@ func (er erasureObjects) listPath(ctx context.Context, o listPathOptions) (entri
 	// Create output for our results.
 	cacheR, cacheW := io.Pipe()
 	go func() {
-		// Maybe we can use the real thingie...
+		// Maybe we can use the real context...
 		ctx := context.Background()
 		r, err := hash.NewReader(cacheR, -1, "", "", -1, false)
 		logger.LogIf(ctx, err)
