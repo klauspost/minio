@@ -111,6 +111,22 @@ func (o *listPathOptions) gatherResults(in <-chan metaCacheEntry) func() metaCac
 	}
 }
 
+// findFirstPart will find the part with 0 being the first that corresponds to the marker in the options.
+//
+func (o *listPathOptions) findFirstPart(fi FileInfo) int {
+	if o.Marker == "" {
+		return 0
+	}
+	for i := 0; true; i++ {
+		partKey := fmt.Sprintf("%s-metacache-part-%d", ReservedMetadataPrefixLower, i)
+		v, ok := fi.Metadata[partKey]
+		if !ok {
+			return -1
+		}
+	}
+	return -1
+}
+
 // objectPath returns the object path of the cache.
 func (o *listPathOptions) objectPath() string {
 	return pathJoin("buckets", o.Bucket, ".metacache", o.ID+".s2")
@@ -164,9 +180,14 @@ func (er erasureObjects) listPath(ctx context.Context, o listPathOptions) (entri
 	// See if we have the listing stored.
 	// Not really a loop, we break out if we are unable read and need to fall back.
 	for !o.Create {
+		fi, metaArr, onlineDisks, err := er.getObjectFileInfo(ctx, o.Bucket, o.ID, ObjectOptions{})
+		if err != nil || fi.Deleted {
+			break
+		}
+
 		r, w := io.Pipe()
 		go func() {
-			err := er.getObject(ctx, minioMetaBucket, o.objectPath(), 0, -1, w, "", ObjectOptions{})
+			err := er.getObjectWithFileInfo(ctx, minioMetaBucket, o.objectPath(), 0, -1, w, fi, metaArr, onlineDisks)
 			w.CloseWithError(err)
 		}()
 

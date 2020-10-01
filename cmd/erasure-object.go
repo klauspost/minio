@@ -190,7 +190,7 @@ func (er erasureObjects) GetObjectNInfo(ctx context.Context, bucket, object stri
 
 	pr, pw := io.Pipe()
 	go func() {
-		err := er.getObjectWithFileInfo(ctx, bucket, object, off, length, pw, "", opts, fi, metaArr, onlineDisks)
+		err := er.getObjectWithFileInfo(ctx, bucket, object, off, length, pw, fi, metaArr, onlineDisks)
 		pw.CloseWithError(err)
 	}()
 
@@ -238,10 +238,10 @@ func (er erasureObjects) GetObject(ctx context.Context, bucket, object string, s
 		return toObjectErr(err, bucket, object)
 	}
 
-	return er.getObject(ctx, bucket, object, startOffset, length, writer, etag, opts)
+	return er.getObject(ctx, bucket, object, startOffset, length, writer, opts)
 }
 
-func (er erasureObjects) getObjectWithFileInfo(ctx context.Context, bucket, object string, startOffset int64, length int64, writer io.Writer, etag string, opts ObjectOptions, fi FileInfo, metaArr []FileInfo, onlineDisks []StorageAPI) error {
+func (er erasureObjects) getObjectWithFileInfo(ctx context.Context, bucket, object string, startOffset, length int64, writer io.Writer, fi FileInfo, metaArr []FileInfo, onlineDisks []StorageAPI) error {
 	// Reorder online disks based on erasure distribution order.
 	onlineDisks = shuffleDisks(onlineDisks, fi.Erasure.Distribution)
 
@@ -350,7 +350,7 @@ func (er erasureObjects) getObjectWithFileInfo(ctx context.Context, bucket, obje
 }
 
 // getObject wrapper for erasure GetObject
-func (er erasureObjects) getObject(ctx context.Context, bucket, object string, startOffset int64, length int64, writer io.Writer, etag string, opts ObjectOptions) error {
+func (er erasureObjects) getObject(ctx context.Context, bucket, object string, startOffset, length int64, writer io.Writer, opts ObjectOptions) error {
 	fi, metaArr, onlineDisks, err := er.getObjectFileInfo(ctx, bucket, object, opts)
 	if err != nil {
 		return toObjectErr(err, bucket, object)
@@ -363,7 +363,7 @@ func (er erasureObjects) getObject(ctx context.Context, bucket, object string, s
 		return toObjectErr(errMethodNotAllowed, bucket, object)
 	}
 
-	return er.getObjectWithFileInfo(ctx, bucket, object, startOffset, length, writer, etag, opts, fi, metaArr, onlineDisks)
+	return er.getObjectWithFileInfo(ctx, bucket, object, startOffset, length, writer, fi, metaArr, onlineDisks)
 }
 
 // getObjectInfoDir - This getObjectInfo is specific to object directory lookup.
