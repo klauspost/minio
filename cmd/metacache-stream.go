@@ -17,12 +17,16 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"sync"
+
+	"github.com/minio/minio/cmd/logger"
 
 	"github.com/klauspost/compress/s2"
 	"github.com/tinylib/msgp/msgp"
@@ -32,9 +36,10 @@ const metacacheStreamVersion = 1
 
 // metacacheWriter provides a serializer of metacache objects.
 type metacacheWriter struct {
-	mw      *msgp.Writer
-	creator func() error
-	closer  func() error
+	mw        *msgp.Writer
+	creator   func() error
+	closer    func() error
+	blockSize int
 
 	streamErr error
 	streamWg  sync.WaitGroup
@@ -48,7 +53,8 @@ func newMetacacheWriter(out io.Writer, blockSize int) *metacacheWriter {
 		blockSize = 128 << 10
 	}
 	w := metacacheWriter{
-		mw: nil,
+		mw:        nil,
+		blockSize: blockSize,
 	}
 	w.creator = func() error {
 		s2w := s2.NewWriter(out, s2.WriterBlockSize(blockSize))
@@ -210,6 +216,34 @@ func (w *metacacheWriter) Close() error {
 	err := w.closer()
 	w.closer = nil
 	return err
+}
+
+// Reset and start writing to new writer.
+// Close must have been called before this.
+func (w *metacacheWriter) Reset(out io.Writer) {
+	w.streamErr = nil
+	w.creator = func() error {
+		s2w := s2.NewWriter(out, s2.WriterBlockSize(w.blockSize))
+		w.mw = msgp.NewWriter(s2w)
+		w.creator = nil
+		if err := w.mw.WriteByte(metacacheStreamVersion); err != nil {
+			return err
+		}
+
+		w.closer = func() error {
+			if w.streamErr != nil {
+				return w.streamErr
+			}
+			if err := w.mw.WriteBool(false); err != nil {
+				return err
+			}
+			if err := w.mw.Flush(); err != nil {
+				return err
+			}
+			return s2w.Close()
+		}
+		return nil
+	}
 }
 
 var s2DecPool = sync.Pool{New: func() interface{} {
@@ -671,4 +705,93 @@ func (r *metacacheReader) Close() error {
 	r.closer = nil
 	r.creator = nil
 	return nil
+}
+
+// metacacheBlockWriter collects blocks and provides a callaback to store them.
+type metacacheBlockWriter struct {
+	wg           sync.WaitGroup
+	streamErr    error
+	blocks       int
+	blockEntries int
+}
+
+// newMetacacheBlockWriter provides a streaming block writer.
+// Each block is the size of the capacity of the input channel.
+// The caller should close to indicate the stream has ended.
+func newMetacacheBlockWriter(in <-chan metaCacheEntry, nextBlock func(b *metacacheBlock) error) *metacacheBlockWriter {
+	w := metacacheBlockWriter{blockEntries: cap(in)}
+	w.wg.Add(1)
+	go func() {
+		defer w.wg.Done()
+		var current metacacheBlock
+		var n int
+		var buf bytes.Buffer
+		block := newMetacacheWriter(&buf, 1<<20)
+		finishBlock := func() {
+			fmt.Println("FinishBlock")
+			err := block.Close()
+			if err != nil {
+				w.streamErr = err
+				return
+			}
+			current.data = buf.Bytes()
+			w.streamErr = nextBlock(&current)
+			// Prepare for next
+			current.n++
+			buf.Reset()
+			block.Reset(&buf)
+			current.First = ""
+		}
+		for o := range in {
+			if len(o.name) == 0 || w.streamErr != nil {
+				continue
+			}
+			if current.First == "" {
+				current.First = o.name
+			}
+
+			if n >= w.blockEntries-1 {
+				finishBlock()
+				n = 0
+			}
+			n++
+
+			w.streamErr = block.write(o)
+			if w.streamErr != nil {
+				continue
+			}
+			current.Last = o.name
+		}
+		fmt.Println("Exited input", n, "status", w.streamErr)
+		if n > 0 {
+			current.EOS = true
+			finishBlock()
+		}
+	}()
+	return &w
+}
+
+// Close the stream.
+// The incoming channel must be closed before calling this.
+// Returns the first error the occurred during the writing if any.
+func (w *metacacheBlockWriter) Close() error {
+	w.wg.Wait()
+	return w.streamErr
+}
+
+type metacacheBlock struct {
+	data  []byte
+	n     int
+	First string `json:"f"`
+	Last  string `json:"l"`
+	EOS   bool   `json:"eos,omitempty"`
+}
+
+func (b metacacheBlock) headerKV() map[string]string {
+	v, err := json.Marshal(b)
+	if err != nil {
+		logger.LogIf(context.Background(), err) // Unlikely
+		return nil
+	}
+	return map[string]string{fmt.Sprintf("%s-metacache-part-%d", ReservedMetadataPrefixLower, b.n): string(v)}
 }

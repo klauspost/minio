@@ -1102,6 +1102,66 @@ func (er erasureObjects) PutObjectTags(ctx context.Context, bucket, object strin
 	return nil
 }
 
+// updateObjectMeta will update the metadata of a file.
+func (er erasureObjects) updateObjectMeta(ctx context.Context, bucket, object string, meta map[string]string, opts ObjectOptions) error {
+	if len(meta) == 0 {
+		return nil
+	}
+	disks := er.getDisks()
+
+	// Read metadata associated with the object from all disks.
+	metaArr, errs := readAllFileInfo(ctx, disks, bucket, object, opts.VersionID)
+
+	readQuorum, writeQuorum, err := objectQuorumFromMeta(ctx, er, metaArr, errs)
+	if err != nil {
+		return toObjectErr(err, bucket, object)
+	}
+
+	// List all online disks.
+	_, modTime := listOnlineDisks(disks, metaArr, errs)
+
+	// Pick latest valid metadata.
+	fi, err := pickValidFileInfo(ctx, metaArr, modTime, readQuorum)
+	if err != nil {
+		return toObjectErr(err, bucket, object)
+	}
+
+	// Update metadata
+	for k, v := range meta {
+		fi.Metadata[k] = v
+	}
+
+	if fi.Deleted {
+		if opts.VersionID == "" {
+			return toObjectErr(errFileNotFound, bucket, object)
+		}
+		return toObjectErr(errMethodNotAllowed, bucket, object)
+	}
+
+	for i, fi := range metaArr {
+		if errs[i] != nil {
+			// Avoid disks where loading metadata fail
+			continue
+		}
+
+		metaArr[i].Metadata = fi.Metadata
+	}
+
+	tempObj := mustGetUUID()
+
+	// Write unique `xl.meta` for each disk.
+	if disks, err = writeUniqueFileInfo(ctx, disks, minioMetaTmpBucket, tempObj, metaArr, writeQuorum); err != nil {
+		return toObjectErr(err, bucket, object)
+	}
+
+	// Atomically rename metadata from tmp location to destination for each disk.
+	if _, err = renameFileInfo(ctx, disks, minioMetaTmpBucket, tempObj, bucket, object, writeQuorum); err != nil {
+		return toObjectErr(err, bucket, object)
+	}
+
+	return nil
+}
+
 // DeleteObjectTags - delete object tags from an existing object
 func (er erasureObjects) DeleteObjectTags(ctx context.Context, bucket, object string, opts ObjectOptions) error {
 	return er.PutObjectTags(ctx, bucket, object, "", opts)

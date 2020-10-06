@@ -19,10 +19,11 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/minio/minio/cmd/config/storageclass"
@@ -71,15 +72,19 @@ type listPathOptions struct {
 
 // gatherResults will collect all results on the input channel and filter results according to the options.
 // Caller should close the channel when done.
-// The returned function will return the results.
+// The returned function will return the results once there is enough or input is closed.
 func (o *listPathOptions) gatherResults(in <-chan metaCacheEntry) func() metaCacheEntriesSorted {
-	var results metaCacheEntriesSorted
-	var wg sync.WaitGroup
-	wg.Add(1)
+	var resultsDone = make(chan metaCacheEntriesSorted)
+	// Copy so we can mutate
+	resCh := resultsDone
 	go func() {
-		defer wg.Done()
+		var results metaCacheEntriesSorted
 		for entry := range in {
 			if o.Limit > 0 && results.len() > o.Limit {
+				if resCh != nil {
+					resCh <- results
+					resCh = nil
+				}
 				continue
 			}
 			//fmt.Println("gather got:", entry.name)
@@ -104,36 +109,80 @@ func (o *listPathOptions) gatherResults(in <-chan metaCacheEntry) func() metaCac
 			//fmt.Println("adding...")
 			results.o = append(results.o, entry)
 		}
+		if resCh != nil {
+			resCh <- results
+			resCh = nil
+		}
 	}()
 	return func() metaCacheEntriesSorted {
-		wg.Wait()
-		return results
+		return <-resultsDone
 	}
 }
 
 // findFirstPart will find the part with 0 being the first that corresponds to the marker in the options.
-//
-func (o *listPathOptions) findFirstPart(fi FileInfo) int {
-	if o.Marker == "" {
-		return 0
+// io.ErrUnexpectedEOF is returned if the place containing the marker hasn't been scanned yet.
+// io.EOF indicates the marker is beyond the end of the stream and does not exist.
+func (o *listPathOptions) findFirstPart(fi FileInfo) (int, error) {
+	search := o.Marker
+	if search == "" {
+		search = o.Prefix
 	}
-	for i := 0; true; i++ {
+	if search == "" {
+		return 0, nil
+	}
+	fmt.Println("searching for ", search)
+	var tmp metacacheBlock
+	i := 0
+	for {
 		partKey := fmt.Sprintf("%s-metacache-part-%d", ReservedMetadataPrefixLower, i)
 		v, ok := fi.Metadata[partKey]
 		if !ok {
-			return -1
+			fmt.Println("no match in metadata, waiting")
+			return -1, io.ErrUnexpectedEOF
 		}
+		err := json.Unmarshal([]byte(v), &tmp)
+		if !ok {
+			logger.LogIf(context.Background(), err)
+			return -1, err
+		}
+		if tmp.First >= search {
+			fmt.Println("First >= search", v)
+			return i, nil
+		}
+		if tmp.Last >= search {
+			fmt.Println("Last >= search", v)
+			return i, nil
+		}
+		if tmp.EOS {
+			fmt.Println("no match, at EOS", v)
+			return -3, io.EOF
+		}
+		//fmt.Println("First ", tmp.First, "<", search, " search", i)
+		i++
 	}
-	return -1
+	return -2, io.ErrUnexpectedEOF
+}
+
+func getMetacacheBlockInfo(fi FileInfo, block int) (*metacacheBlock, error) {
+	var tmp metacacheBlock
+	partKey := fmt.Sprintf("%s-metacache-part-%d", ReservedMetadataPrefixLower, block)
+	v, ok := fi.Metadata[partKey]
+	if !ok {
+		return nil, io.ErrUnexpectedEOF
+	}
+	return &tmp, json.Unmarshal([]byte(v), &tmp)
 }
 
 // objectPath returns the object path of the cache.
-func (o *listPathOptions) objectPath() string {
-	return pathJoin("buckets", o.Bucket, ".metacache", o.ID+".s2")
+func (o *listPathOptions) objectPath(block int) string {
+	if block <= 0 {
+		return pathJoin("buckets", o.Bucket, ".metacache-", o.ID+".s2")
+	}
+	return pathJoin("buckets", o.Bucket, ".metacache", o.ID+"-"+strconv.Itoa(block)+".s2")
 }
 
 // filter will apply the options and return the number of objects requested by the limit.
-// Will return io.EOF if there are no more entries.
+// Will return io.EOF if there are no more entries with the same filter.
 // The last entry can be used as a marker to resume the listing.
 func (r *metacacheReader) filter(o listPathOptions) (entries metaCacheEntriesSorted, err error) {
 	// Forward to prefix, if any
@@ -141,17 +190,23 @@ func (r *metacacheReader) filter(o listPathOptions) (entries metaCacheEntriesSor
 	if err != nil {
 		return entries, err
 	}
-	fmt.Println("forwarded to ", o.Prefix)
 	if o.Marker != "" {
 		err = r.forwardTo(o.Marker)
 		if err != nil {
 			return entries, err
 		}
 	}
+	fmt.Println("forwarded to ", o.Prefix, "marker:", o.Marker)
 	// Filter
 	if !o.Recursive {
 		entries.o = make(metaCacheEntries, 0, o.Limit)
+		pastPrefix := false
 		err := r.readFn(func(entry metaCacheEntry) bool {
+			if o.Prefix != "" && !strings.HasPrefix(entry.name, o.Prefix) {
+				// We are past the prefix, don't continue.
+				pastPrefix = true
+				return false
+			}
 			if o.InclDeleted && entry.isObject() && entry.isLatestDeletemarker() {
 				return entries.len() >= o.Limit
 			}
@@ -160,7 +215,7 @@ func (r *metacacheReader) filter(o listPathOptions) (entries metaCacheEntriesSor
 			}
 			return entries.len() >= o.Limit
 		})
-		if err == io.EOF {
+		if err == io.EOF || pastPrefix {
 			return entries, io.EOF
 		}
 		return entries, err
@@ -170,38 +225,122 @@ func (r *metacacheReader) filter(o listPathOptions) (entries metaCacheEntriesSor
 	defer fmt.Println("returned")
 
 	// We should not need to filter more.
+	//  FIXME: Really, what about stopping when we get outside the requested prefix?
 	return r.readN(o.Limit, o.InclDeleted)
+}
+
+func (er erasureObjects) streamMetadataParts(ctx context.Context, o listPathOptions) (entries metaCacheEntriesSorted, err error) {
+	partN := -1
+	for {
+		select {
+		case <-ctx.Done():
+			return entries, ctx.Err()
+		default:
+		}
+		// Load first part metadata...
+		fi, metaArr, onlineDisks, err := er.getObjectFileInfo(ctx, minioMetaBucket, o.objectPath(0), ObjectOptions{})
+		if err != nil {
+			if err == errFileNotFound {
+				// Not ready yet...
+				time.Sleep(100 * time.Millisecond)
+				continue
+			}
+
+			fmt.Println("first getObjectFileInfo", o.objectPath(0), "returned err:", err)
+			return entries, err
+		}
+		if fi.Deleted {
+			fmt.Println(o.objectPath(0), "deleted")
+			return entries, errFileNotFound
+		}
+
+		partN, err = o.findFirstPart(fi)
+		switch err {
+		case nil:
+		case io.ErrUnexpectedEOF:
+			time.Sleep(100 * time.Millisecond)
+			continue
+		case io.EOF:
+			fmt.Println("findFirstPart EOF", fi.Metadata)
+			return entries, io.EOF
+		}
+		// We got a stream to start at.
+		loadedPart := 0
+		var buf bytes.Buffer
+		for {
+			if partN != loadedPart {
+				// Load first part metadata...
+				fi, metaArr, onlineDisks, err = er.getObjectFileInfo(ctx, minioMetaBucket, o.objectPath(partN), ObjectOptions{})
+				switch err {
+				case errFileNotFound:
+					// Not ready yet...
+					time.Sleep(100 * time.Millisecond)
+					continue
+				default:
+					fmt.Println("getObjectFileInfo err", o.objectPath(partN), fi.Metadata, err)
+					return entries, err
+				case nil:
+					loadedPart = partN
+				}
+				if fi.Deleted {
+					return entries, io.ErrUnexpectedEOF
+				}
+			}
+			buf.Reset()
+			err := er.getObjectWithFileInfo(ctx, minioMetaBucket, o.objectPath(partN), 0, fi.Size, &buf, fi, metaArr, onlineDisks)
+			if err != nil {
+				fmt.Println("getObjectWithFileInfo err", o.objectPath(partN), fi.Metadata, err)
+				return entries, err
+			}
+			tmp, err := newMetacacheReader(&buf)
+			if err != nil {
+				return entries, err
+			}
+			e, err := tmp.filter(o)
+			entries.o = append(entries.o, e.o...)
+			if o.Limit > 0 && entries.len() > o.Limit {
+				entries.truncate(o.Limit)
+				return entries, nil
+			}
+			switch err {
+			case io.EOF:
+				// We finished at the end of the block.
+				// And should not expect any more results.
+				bi, err := getMetacacheBlockInfo(fi, partN)
+				logger.LogIf(ctx, err)
+				if err != nil || bi.EOS {
+					// We are done and there are no more parts.
+					return entries, io.EOF
+				}
+				partN++
+			case nil:
+				// We stopped within the listing, we are done for now...
+				return entries, nil
+			default:
+				return entries, err
+			}
+		}
+	}
 }
 
 // Will return io.EOF if continuing would not yield more results.
 func (er erasureObjects) listPath(ctx context.Context, o listPathOptions) (entries metaCacheEntriesSorted, err error) {
 	startTime := time.Now()
-	//fmt.Println("set listing bucket:", o.Bucket, "basedir:", o.BaseDir)
+	fmt.Println("set listing bucket:", o.Bucket, "basedir:", o.BaseDir)
 	// See if we have the listing stored.
-	// Not really a loop, we break out if we are unable read and need to fall back.
-	for !o.Create {
-		fi, metaArr, onlineDisks, err := er.getObjectFileInfo(ctx, o.Bucket, o.ID, ObjectOptions{})
-		if err != nil || fi.Deleted {
-			break
+	if !o.Create {
+		entries, err := er.streamMetadataParts(ctx, o)
+		switch err {
+		case nil, io.EOF, context.Canceled, context.DeadlineExceeded:
+			return entries, err
 		}
-
-		r, w := io.Pipe()
-		go func() {
-			err := er.getObjectWithFileInfo(ctx, minioMetaBucket, o.objectPath(), 0, -1, w, fi, metaArr, onlineDisks)
-			w.CloseWithError(err)
-		}()
-
-		mr, err := newMetacacheReader(r)
-		_, err2 := mr.peek()
-		if err != nil || err2 != nil {
-			r.Close()
-			break
-		}
-		defer r.Close()
-		defer mr.Close()
-		return mr.filter(o)
+		logger.LogIf(ctx, err)
+		// TODO: Should we start listing???
+		return entries, err
 	}
 
+	// Disconnect from call above.
+	ctx = context.Background()
 	// We need to ask disks.
 	var disks []StorageAPI
 	for _, d := range er.getLoadBalancedDisks() {
@@ -222,7 +361,6 @@ func (er erasureObjects) listPath(ctx context.Context, o listPathOptions) (entri
 		disks = disks[:askDisks]
 	}
 	var readers = make([]*metacacheReader, askDisks)
-
 	for i := range disks {
 		r, w := io.Pipe()
 		d := disks[i]
@@ -238,26 +376,10 @@ func (er erasureObjects) listPath(ctx context.Context, o listPathOptions) (entri
 		}()
 	}
 
+	// FIXME: Return when we have enough results...
 	// Create output for our results.
-	cacheR, cacheW := io.Pipe()
-	go func() {
-		// Maybe we can use the real context...
-		ctx := context.Background()
-		r, err := hash.NewReader(cacheR, -1, "", "", -1, false)
-		logger.LogIf(ctx, err)
-		_, err = er.putObject(ctx, minioMetaBucket, o.objectPath(), NewPutObjReader(r, nil, nil), ObjectOptions{UserDefined: map[string]string{xhttp.AmzStorageClass: storageclass.RRS}})
-		logger.LogIf(ctx, err)
-	}()
-	defer cacheW.Close()
-
-	// Write to cache.
-	cacheWriter := newMetacacheWriter(cacheW, 1<<20)
-	defer cacheWriter.Close()
-	cacheCh, err := cacheWriter.stream()
-	if err != nil {
-		logger.LogIf(ctx, err)
-		return entries, err
-	}
+	const blockSize = 5000
+	cacheCh := make(chan metaCacheEntry, blockSize)
 
 	// Create filter for results.
 	filterCh := make(chan metaCacheEntry, 100)
@@ -267,81 +389,100 @@ func (er erasureObjects) listPath(ctx context.Context, o listPathOptions) (entri
 		close(filterCh)
 	}
 
-	// Merge results from the readers.
-	resolver := metadataResolutionParams{
-		startTime: startTime,
-		dirQuorum: askDisks - 1,
-		bucket:    o.Bucket,
-	}
-
-	topEntries := make(metaCacheEntries, len(readers))
-	for {
-		if o.Limit > 0 && entries.len() == o.Limit {
-			break
-		}
-		// Get the top entry from each
-		var current metaCacheEntry
-		var atEOF, agree int
-		for i, r := range readers {
-			topEntries[i].name = ""
-			entry, err := r.peek()
-			switch err {
-			case io.EOF:
-				atEOF++
-				continue
-			case nil:
-			default:
-				closeChannels()
-				return entries, err
+	go func() {
+		// Write results to disk.
+		bw := newMetacacheBlockWriter(cacheCh, func(b *metacacheBlock) error {
+			fmt.Println("SAVING BLOCK", b.n, "to", o.objectPath(b.n))
+			r, err := hash.NewReader(bytes.NewBuffer(b.data), int64(len(b.data)), "", "", int64(len(b.data)), false)
+			logger.LogIf(ctx, err)
+			meta := b.headerKV()
+			meta[xhttp.AmzStorageClass] = storageclass.RRS
+			_, err = er.putObject(ctx, minioMetaBucket, o.objectPath(b.n), NewPutObjReader(r, nil, nil), ObjectOptions{UserDefined: meta})
+			if err != nil || b.n == 0 {
+				logger.LogIf(ctx, err)
+				return err
 			}
-			if entry.name == current.name || current.name == "" {
-				topEntries[i] = entry
-				if current.name == "" || bytes.Equal(current.metadata, entry.metadata) {
-					agree++
+			// Update block 0 metadata.
+			// TODO: Potentially a bit risky. Should we just retry?
+			return er.updateObjectMeta(ctx, minioMetaBucket, o.objectPath(0), b.headerKV(), ObjectOptions{})
+		})
+		defer bw.Close()
+
+		// Merge results from the readers.
+		resolver := metadataResolutionParams{
+			startTime: startTime,
+			dirQuorum: askDisks - 1,
+			bucket:    o.Bucket,
+		}
+
+		topEntries := make(metaCacheEntries, len(readers))
+		for {
+			// Get the top entry from each
+			var current metaCacheEntry
+			var atEOF, agree int
+			for i, r := range readers {
+				topEntries[i].name = ""
+				entry, err := r.peek()
+				switch err {
+				case io.EOF:
+					atEOF++
+					continue
+				case nil:
+				default:
+					closeChannels()
+					// FIXME: Handle error
+					return
+				}
+				if entry.name == current.name || current.name == "" {
+					topEntries[i] = entry
+					if current.name == "" || bytes.Equal(current.metadata, entry.metadata) {
+						agree++
+						continue
+					}
+					current = entry
 					continue
 				}
+				// We got different entries
+				if entry.name > current.name {
+					continue
+				}
+				// We got a new, better current.
+				for i := range topEntries[:i] {
+					topEntries[i] = metaCacheEntry{}
+				}
+				agree = 1
 				current = entry
+				topEntries[i] = entry
+			}
+			// Break if all at EOF.
+			if atEOF == len(readers) {
+				break
+			}
+			if agree == len(readers) {
+				// Everybody agreed
+				for _, r := range readers {
+					r.skip(1)
+				}
+				cacheCh <- topEntries[0]
+				filterCh <- topEntries[0]
 				continue
 			}
-			// We got different entries
-			if entry.name > current.name {
-				continue
-			}
-			// We got a new, better current.
-			for i := range topEntries[:i] {
-				topEntries[i] = metaCacheEntry{}
-			}
-			agree = 1
-			current = entry
-			topEntries[i] = entry
-		}
-		// Break if all at EOF.
-		if atEOF == len(readers) {
-			break
-		}
-		if agree == len(readers) {
-			// Everybody agreed
-			for _, r := range readers {
-				r.skip(1)
-			}
-			cacheCh <- topEntries[0]
-			filterCh <- topEntries[0]
-			continue
-		}
 
-		// Results Disagree :-(
-		entry, ok := topEntries.resolve(&resolver)
-		if ok {
-			cacheCh <- *entry
-			filterCh <- *entry
-		}
-		// Skip the inputs we used.
-		for i, r := range readers {
-			if topEntries[i].name != "" {
-				r.skip(1)
+			// Results Disagree :-(
+			entry, ok := topEntries.resolve(&resolver)
+			if ok {
+				cacheCh <- *entry
+				filterCh <- *entry
+			}
+			// Skip the inputs we used.
+			for i, r := range readers {
+				if topEntries[i].name != "" {
+					r.skip(1)
+				}
 			}
 		}
-	}
-	closeChannels()
+		closeChannels()
+	}()
+
 	return filteredResults(), nil
 }

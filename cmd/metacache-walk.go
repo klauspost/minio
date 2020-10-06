@@ -92,7 +92,7 @@ func (s *xlStorage) WalkDir(ctx context.Context, opts WalkDirOptions, wr io.Writ
 
 	var scanDir func(path string) error
 	scanDir = func(current string) error {
-		fmt.Println("scandir:", current)
+		//fmt.Println("scandir:", current)
 		entries, err := s.ListDir(ctx, opts.Bucket, current, -1)
 		if err != nil {
 			// Folder could have gone away in-between
