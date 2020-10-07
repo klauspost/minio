@@ -42,7 +42,7 @@ func loadMetacacheSample(t testing.TB) *metacacheReader {
 func loadMetacacheSampleEntries(t testing.TB) metaCacheEntriesSorted {
 	r := loadMetacacheSample(t)
 	defer r.Close()
-	entries, err := r.readN(-1, false)
+	entries, err := r.readN(-1, false, "")
 	if err != io.EOF {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func Test_metacacheReader_readNames(t *testing.T) {
 func Test_metacacheReader_readN(t *testing.T) {
 	r := loadMetacacheSample(t)
 	defer r.Close()
-	entries, err := r.readN(-1, false)
+	entries, err := r.readN(-1, false, "")
 	if err != io.EOF {
 		t.Fatal(err, entries.len())
 	}
@@ -86,7 +86,7 @@ func Test_metacacheReader_readN(t *testing.T) {
 	}
 
 	want = want[:0]
-	entries, err = r.readN(0, false)
+	entries, err = r.readN(0, false, "")
 	if err != nil {
 		t.Fatal(err, entries.len())
 	}
@@ -95,7 +95,7 @@ func Test_metacacheReader_readN(t *testing.T) {
 	}
 	r = loadMetacacheSample(t)
 	defer r.Close()
-	entries, err = r.readN(0, false)
+	entries, err = r.readN(0, false, "")
 	if err != nil {
 		t.Fatal(err, entries.len())
 	}
@@ -103,7 +103,7 @@ func Test_metacacheReader_readN(t *testing.T) {
 		t.Fatal("unexpected length:", entries.len(), "want:", len(want))
 	}
 
-	entries, err = r.readN(5, false)
+	entries, err = r.readN(5, false, "")
 	if err != nil {
 		t.Fatal(err, entries.len())
 	}
@@ -112,6 +112,72 @@ func Test_metacacheReader_readN(t *testing.T) {
 		t.Fatal("unexpected length:", entries.len(), "want:", len(want))
 	}
 
+	for i, entry := range entries.entries() {
+		if entry.name != want[i] {
+			t.Errorf("entry %d, want %q, got %q", i, want[i], entry.name)
+		}
+	}
+}
+
+func Test_metacacheReader_readNPrefix(t *testing.T) {
+	r := loadMetacacheSample(t)
+	defer r.Close()
+	entries, err := r.readN(-1, false, "src/compress/bzip2/")
+	if err != io.EOF {
+		t.Fatal(err, entries.len())
+	}
+	want := loadMetacacheSampleNames[:16]
+	for i, entry := range entries.entries() {
+		if entry.name != want[i] {
+			t.Errorf("entry %d, want %q, got %q", i, want[i], entry.name)
+		}
+	}
+	if entries.len() != len(want) {
+		t.Fatal("unexpected length:", entries.len(), "want:", len(want))
+	}
+
+	r = loadMetacacheSample(t)
+	defer r.Close()
+	entries, err = r.readN(-1, false, "src/nonexist")
+	if err != io.EOF {
+		t.Fatal(err, entries.len())
+	}
+	want = loadMetacacheSampleNames[:0]
+	if entries.len() != len(want) {
+		t.Fatal("unexpected length:", entries.len(), "want:", len(want))
+	}
+	for i, entry := range entries.entries() {
+		if entry.name != want[i] {
+			t.Errorf("entry %d, want %q, got %q", i, want[i], entry.name)
+		}
+	}
+
+	r = loadMetacacheSample(t)
+	defer r.Close()
+	entries, err = r.readN(-1, false, "src/a")
+	if err != io.EOF {
+		t.Fatal(err, entries.len())
+	}
+	want = loadMetacacheSampleNames[:0]
+	if entries.len() != len(want) {
+		t.Fatal("unexpected length:", entries.len(), "want:", len(want))
+	}
+	for i, entry := range entries.entries() {
+		if entry.name != want[i] {
+			t.Errorf("entry %d, want %q, got %q", i, want[i], entry.name)
+		}
+	}
+
+	r = loadMetacacheSample(t)
+	defer r.Close()
+	entries, err = r.readN(-1, false, "src/compress/zlib/e")
+	if err != io.EOF {
+		t.Fatal(err, entries.len())
+	}
+	want = []string{"src/compress/zlib/example_test.go"}
+	if entries.len() != len(want) {
+		t.Fatal("unexpected length:", entries.len(), "want:", len(want))
+	}
 	for i, entry := range entries.entries() {
 		if entry.name != want[i] {
 			t.Errorf("entry %d, want %q, got %q", i, want[i], entry.name)

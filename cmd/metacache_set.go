@@ -68,6 +68,13 @@ type listPathOptions struct {
 
 	// Create indicates that the lister should not attempt to load an existing cache.
 	Create bool
+
+	// CurrentCycle indicates the current bloom cycle.
+	// Will be used if a new scan is started.
+	CurrentCycle uint64
+
+	// OldestCycle indicates the oldest cycle acceptable.
+	OldestCycle uint64
 }
 
 // gatherResults will collect all results on the input channel and filter results according to the options.
@@ -175,10 +182,7 @@ func getMetacacheBlockInfo(fi FileInfo, block int) (*metacacheBlock, error) {
 
 // objectPath returns the object path of the cache.
 func (o *listPathOptions) objectPath(block int) string {
-	if block <= 0 {
-		return pathJoin("buckets", o.Bucket, ".metacache-", o.ID+".s2")
-	}
-	return pathJoin("buckets", o.Bucket, ".metacache", o.ID+"-"+strconv.Itoa(block)+".s2")
+	return pathJoin("buckets", o.Bucket, ".metacache", o.ID, strconv.Itoa(block)+".s2")
 }
 
 // filter will apply the options and return the number of objects requested by the limit.
@@ -226,7 +230,7 @@ func (r *metacacheReader) filter(o listPathOptions) (entries metaCacheEntriesSor
 
 	// We should not need to filter more.
 	//  FIXME: Really, what about stopping when we get outside the requested prefix?
-	return r.readN(o.Limit, o.InclDeleted)
+	return r.readN(o.Limit, o.InclDeleted, o.Prefix)
 }
 
 func (er erasureObjects) streamMetadataParts(ctx context.Context, o listPathOptions) (entries metaCacheEntriesSorted, err error) {

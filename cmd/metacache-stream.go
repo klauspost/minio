@@ -389,6 +389,13 @@ func (r *metacacheReader) forwardTo(s string) error {
 	if s == "" {
 		return nil
 	}
+	if r.current.name != "" {
+		if r.current.name >= s {
+			return nil
+		}
+		r.current.name = ""
+		r.current.metadata = nil
+	}
 	// temporary name buffer.
 	var tmp = make([]byte, 0, 256)
 	for {
@@ -440,7 +447,7 @@ func (r *metacacheReader) forwardTo(s string) error {
 // or all if n < 0.
 // Will return io.EOF if end of stream is reached.
 // If requesting 0 objects nil error will always be returned regardless of at end of stream.
-func (r *metacacheReader) readN(n int, inclDeleted bool) (metaCacheEntriesSorted, error) {
+func (r *metacacheReader) readN(n int, inclDeleted bool, prefix string) (metaCacheEntriesSorted, error) {
 	r.checkInit()
 	if r.err != nil {
 		return metaCacheEntriesSorted{}, r.err
@@ -452,11 +459,15 @@ func (r *metacacheReader) readN(n int, inclDeleted bool) (metaCacheEntriesSorted
 	if n > 0 {
 		res = make(metaCacheEntries, 0, n)
 	}
+	if prefix != "" {
+		if err := r.forwardTo(prefix); err != nil {
+			return metaCacheEntriesSorted{}, err
+		}
+	}
 	if r.current.name != "" {
-		if inclDeleted || !r.current.isLatestDeletemarker() {
+		if inclDeleted || !r.current.isLatestDeletemarker() && r.current.hasPrefix(prefix) {
 			res = append(res, r.current)
 		}
-		res = append(res, r.current)
 		r.current.name = ""
 		r.current.metadata = nil
 	}
@@ -482,6 +493,10 @@ func (r *metacacheReader) readN(n int, inclDeleted bool) (metaCacheEntriesSorted
 			}
 			r.err = err
 			return metaCacheEntriesSorted{o: res}, err
+		}
+		if !meta.hasPrefix(prefix) {
+			r.mr.R.Skip(1)
+			return metaCacheEntriesSorted{o: res}, io.EOF
 		}
 		if meta.metadata, err = r.mr.ReadBytes(nil); err != nil {
 			if err == io.EOF {
