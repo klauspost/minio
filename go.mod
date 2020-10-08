@@ -20,6 +20,7 @@ require (
 	github.com/dchest/siphash v1.2.1
 	github.com/dgrijalva/jwt-go v3.2.0+incompatible
 	github.com/djherbis/atime v1.0.0
+	github.com/dswarbrick/smart v0.0.0-20190505152634-909a45200d6d
 	github.com/dustin/go-humanize v1.0.0
 	github.com/eclipse/paho.mqtt.golang v1.2.0
 	github.com/elazarl/go-bindata-assetfs v1.0.0
@@ -47,7 +48,7 @@ require (
 	github.com/miekg/dns v1.1.8
 	github.com/minio/cli v1.22.0
 	github.com/minio/highwayhash v1.0.0
-	github.com/minio/minio-go/v7 v7.0.5-0.20200811211821-14ed05478889
+	github.com/minio/minio-go/v7 v7.0.6-0.20200929220449-755b5633803a
 	github.com/minio/selfupdate v0.3.1
 	github.com/minio/sha256-simd v0.1.1
 	github.com/minio/simdjson-go v0.1.5
@@ -82,7 +83,7 @@ require (
 	golang.org/x/crypto v0.0.0-20200820211705-5c72a883971a
 	golang.org/x/net v0.0.0-20200904194848-62affa334b73
 	golang.org/x/sys v0.0.0-20200915084602-288bc346aa39
-	golang.org/x/tools v0.0.0-20200925191224-5d1fdd8fa346 // indirect
+	golang.org/x/tools v0.0.0-20200929223013-bf155c11ec6f // indirect
 	google.golang.org/api v0.5.0
 	gopkg.in/jcmturner/gokrb5.v7 v7.3.0
 	gopkg.in/ldap.v3 v3.0.3

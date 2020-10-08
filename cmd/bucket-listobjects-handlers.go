@@ -27,6 +27,7 @@ import (
 	"github.com/minio/minio/cmd/logger"
 
 	"github.com/minio/minio/pkg/bucket/policy"
+	"github.com/minio/minio/pkg/handlers"
 	"github.com/minio/minio/pkg/sync/errgroup"
 )
 
@@ -336,8 +337,8 @@ func proxyRequestByNodeIndex(ctx context.Context, w http.ResponseWriter, r *http
 	return proxyRequest(ctx, w, r, ep)
 }
 
-func proxyRequestByBucket(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string) (success bool) {
-	return proxyRequestByNodeIndex(ctx, w, r, crcHashMod(bucket, len(globalProxyEndpoints)))
+func proxyRequestByStringHash(ctx context.Context, w http.ResponseWriter, r *http.Request, str string) (success bool) {
+	return proxyRequestByNodeIndex(ctx, w, r, crcHashMod(str, len(globalProxyEndpoints)))
 }
 
 // ListObjectsV1Handler - GET Bucket (List Objects) Version 1.
@@ -378,7 +379,12 @@ func (api objectAPIHandlers) ListObjectsV1Handler(w http.ResponseWriter, r *http
 		return
 	}
 
-	if proxyRequestByBucket(ctx, w, r, bucket) {
+	// Forward the request using Source IP or bucket
+	forwardStr := handlers.GetSourceIPFromHeaders(r)
+	if forwardStr == "" {
+		forwardStr = bucket
+	}
+	if proxyRequestByStringHash(ctx, w, r, forwardStr) {
 		return
 	}
 
