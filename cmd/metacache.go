@@ -19,6 +19,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"encoding/gob"
 	"errors"
 	"fmt"
 	"io"
@@ -65,6 +66,10 @@ type metacache struct {
 	startedCycle uint64     `msg:"stc"`
 	endedCycle   uint64     `msg:"endc"`
 	dataVersion  uint8      `msg:"v"`
+}
+
+func init() {
+	gob.Register(metacache{})
 }
 
 func (m *metacache) finished() bool {

@@ -671,7 +671,7 @@ func (s *peerRESTServer) ReloadFormatHandler(w http.ResponseWriter, r *http.Requ
 	w.(http.Flusher).Flush()
 }
 
-// CycleServerBloomFilterHandler cycles bllom filter on server.
+// CycleServerBloomFilterHandler cycles bloom filter on server.
 func (s *peerRESTServer) CycleServerBloomFilterHandler(w http.ResponseWriter, r *http.Request) {
 	if !s.IsValid(w, r) {
 		s.writeErrorResponse(w, errors.New("Invalid request"))
@@ -693,6 +693,52 @@ func (s *peerRESTServer) CycleServerBloomFilterHandler(w http.ResponseWriter, r 
 	}
 
 	logger.LogIf(ctx, gob.NewEncoder(w).Encode(bf))
+}
+
+func (s *peerRESTServer) GetMetacacheListingHandler(w http.ResponseWriter, r *http.Request) {
+	if !s.IsValid(w, r) {
+		s.writeErrorResponse(w, errors.New("Invalid request"))
+		return
+	}
+	ctx := newContext(r, w, "GetMetacacheListing")
+
+	var req listPathOptions
+	err := gob.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		s.writeErrorResponse(w, err)
+		return
+	}
+	resp := localMetacacheMgr.getBucket(ctx, req.Bucket).findCache(req)
+	logger.LogIf(ctx, gob.NewEncoder(w).Encode(resp))
+}
+
+func (s *peerRESTServer) UpdateMetacacheListingHandler(w http.ResponseWriter, r *http.Request) {
+	if !s.IsValid(w, r) {
+		s.writeErrorResponse(w, errors.New("Invalid request"))
+		return
+	}
+	ctx := newContext(r, w, "UpdateMetacacheListing")
+
+	var req metacache
+	err := gob.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		s.writeErrorResponse(w, err)
+		return
+	}
+	b := localMetacacheMgr.getBucket(ctx, req.bucket)
+	if b == nil {
+		s.writeErrorResponse(w, errServerNotInitialized)
+		return
+	}
+
+	cache, done := b.updateCache(req.id)
+	if cache == nil {
+		s.writeErrorResponse(w, errFileNotFound)
+		return
+	}
+	*cache = req
+	done()
+	// Return no content if ok.
 }
 
 // PutBucketNotificationHandler - Set bucket policy.
@@ -1085,4 +1131,6 @@ func registerPeerRESTHandlers(router *mux.Router) {
 	subrouter.Methods(http.MethodPost).Path(peerRESTVersionPrefix + peerRESTMethodBackgroundHealStatus).HandlerFunc(server.BackgroundHealStatusHandler)
 	subrouter.Methods(http.MethodPost).Path(peerRESTVersionPrefix + peerRESTMethodLog).HandlerFunc(server.ConsoleLogHandler)
 	subrouter.Methods(http.MethodPost).Path(peerRESTVersionPrefix + peerRESTMethodGetLocalDiskIDs).HandlerFunc(httpTraceHdrs(server.GetLocalDiskIDs))
+	subrouter.Methods(http.MethodPost).Path(peerRESTVersionPrefix + peerRESTMethodGetMetacacheListing).HandlerFunc(httpTraceHdrs(server.GetMetacacheListingHandler))
+	subrouter.Methods(http.MethodPost).Path(peerRESTVersionPrefix + peerRESTMethodUpdateMetacacheListing).HandlerFunc(httpTraceHdrs(server.UpdateMetacacheListingHandler))
 }

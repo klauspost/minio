@@ -19,6 +19,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"encoding/gob"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -75,6 +76,10 @@ type listPathOptions struct {
 
 	// OldestCycle indicates the oldest cycle acceptable.
 	OldestCycle uint64
+}
+
+func init() {
+	gob.Register(listPathOptions{})
 }
 
 // gatherResults will collect all results on the input channel and filter results according to the options.

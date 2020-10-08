@@ -666,6 +666,43 @@ func (client *peerRESTClient) GetLocalDiskIDs(ctx context.Context) (diskIDs []st
 	return diskIDs
 }
 
+// GetMetacacheListing - get a new or existing metacache.
+func (client *peerRESTClient) GetMetacacheListing(ctx context.Context, o listPathOptions) (*metacache, error) {
+	var reader bytes.Buffer
+	err := gob.NewEncoder(&reader).Encode(o)
+	if err != nil {
+		return nil, err
+	}
+	respBody, err := client.callWithContext(ctx, peerRESTMethodGetMetacacheListing, nil, &reader, int64(reader.Len()))
+	if err != nil {
+		logger.LogIf(ctx, err)
+		return nil, err
+	}
+	var resp metacache
+	defer http.DrainBody(respBody)
+	if err = gob.NewDecoder(respBody).Decode(&resp); err != nil {
+		logger.LogIf(ctx, err)
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// UpdateMetacacheListing - update an existing metacache.
+func (client *peerRESTClient) UpdateMetacacheListing(ctx context.Context, m metacache) error {
+	var reader bytes.Buffer
+	err := gob.NewEncoder(&reader).Encode(m)
+	if err != nil {
+		return err
+	}
+	respBody, err := client.callWithContext(ctx, peerRESTMethodUpdateMetacacheListing, nil, &reader, int64(reader.Len()))
+	if err != nil {
+		logger.LogIf(ctx, err)
+		return err
+	}
+	http.DrainBody(respBody)
+	return nil
+}
+
 func (client *peerRESTClient) doTrace(traceCh chan interface{}, doneCh <-chan struct{}, trcAll, trcErr bool) {
 	values := make(url.Values)
 	values.Set(peerRESTTraceAll, strconv.FormatBool(trcAll))
