@@ -172,8 +172,7 @@ func monitorLocalDisksAndHeal(ctx context.Context, z *erasureZones, bgSeq *healS
 
 						logger.Info("Healing disk '%s' on %s zone complete", disk, humanize.Ordinal(i+1))
 
-						if err := disk.DeleteFile(ctx, pathJoin(minioMetaBucket, bucketMetaPrefix),
-							healingTrackerFilename); err != nil {
+						if err := disk.DeleteFile(ctx, pathJoin(minioMetaBucket, bucketMetaPrefix), healingTrackerFilename, false); err != nil {
 							logger.LogIf(ctx, err)
 							continue
 						}

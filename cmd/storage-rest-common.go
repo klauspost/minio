@@ -17,7 +17,7 @@
 package cmd
 
 const (
-	storageRESTVersion       = "v20" // Re-implementation of storage layer
+	storageRESTVersion       = "v21" // Add dir listing.
 	storageRESTVersionPrefix = SlashSeparator + storageRESTVersion
 	storageRESTPrefix        = minioReservedBucketPath + "/storage"
 )

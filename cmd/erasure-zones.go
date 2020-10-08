@@ -1658,7 +1658,10 @@ func (z *erasureZones) DeleteBucket(ctx context.Context, bucket string, forceDel
 	return nil
 }
 
-// deleteAll will delete
+// deleteAll will delete a bucket+prefix unconditionally across all disks.
+// Note that set distribution is ignored so it should only be used in cases where
+// data is not distributed across sets.
+// Errors are logged but individual disk failures are not returned.
 func (z *erasureZones) deleteAll(ctx context.Context, bucket, prefix string) error {
 	var wg sync.WaitGroup
 	for _, zone := range z.zones {
@@ -1670,7 +1673,7 @@ func (z *erasureZones) deleteAll(ctx context.Context, bucket, prefix string) err
 				wg.Add(1)
 				go func(disk StorageAPI) {
 					defer wg.Done()
-					//disk.DeleteFile()
+					logger.LogIf(ctx, disk.DeleteFile(ctx, bucket, prefix, true))
 				}(disk)
 			}
 		}

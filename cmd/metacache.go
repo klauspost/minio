@@ -19,6 +19,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"path"
 	"strings"
@@ -285,15 +286,15 @@ func (b *bucketMetacache) deleteCache(id string) {
 		ctx := context.Background()
 		objAPI := newObjectLayerWithoutSafeModeFn()
 		if objAPI == nil {
+			logger.LogIf(ctx, errors.New("bucketMetacache: no object layer"))
 			return
 		}
-		o := listPathOptions{ID: id, Bucket: b.bucket}
-		var objs []ObjectToDelete
-		for i := 0; i < c.parts; i++ {
-			objs = append(objs, ObjectToDelete{ObjectName: o.objectPath(i)})
+		ez, ok := objAPI.(*erasureZones)
+		if !ok {
+			logger.LogIf(ctx, errors.New("bucketMetacache: expected objAPI to be *erasureZones"))
+			return
 		}
-		// FIXME: This will not be correct with multiple sets.
-		_, _ = objAPI.DeleteObjects(ctx, minioMetaBucket, objs, ObjectOptions{})
+		logger.LogIf(ctx, ez.deleteAll(ctx, minioMetaBucket, metacachePrefixForID(c.bucket, c.id)))
 	}
 }
 

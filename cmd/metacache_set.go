@@ -180,9 +180,13 @@ func getMetacacheBlockInfo(fi FileInfo, block int) (*metacacheBlock, error) {
 	return &tmp, json.Unmarshal([]byte(v), &tmp)
 }
 
+func metacachePrefixForID(bucket, id string) string {
+	return pathJoin("buckets", bucket, ".metacache", id)
+}
+
 // objectPath returns the object path of the cache.
 func (o *listPathOptions) objectPath(block int) string {
-	return pathJoin("buckets", o.Bucket, ".metacache", o.ID, strconv.Itoa(block)+".s2")
+	return pathJoin(metacachePrefixForID(o.Bucket, o.ID), "block-", strconv.Itoa(block)+".s2")
 }
 
 // filter will apply the options and return the number of objects requested by the limit.
