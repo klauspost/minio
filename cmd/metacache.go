@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"path"
 	"strings"
@@ -60,9 +61,68 @@ type metacache struct {
 	started      time.Time  `msg:"st"`
 	ended        time.Time  `msg:"end"`
 	lastUpdate   time.Time  `msg:"u"`
+	lastHandout  time.Time  `msg:"lh"`
 	startedCycle uint64     `msg:"stc"`
 	endedCycle   uint64     `msg:"endc"`
 	dataVersion  uint8      `msg:"v"`
+}
+
+func (m *metacache) finished() bool {
+	return !m.ended.IsZero()
+}
+
+func (m *metacache) worthKeeping(currentCycle uint64) bool {
+	if m == nil {
+		return false
+	}
+	cache := m
+	switch {
+	case !cache.finished() && time.Since(cache.lastUpdate) > metacacheMaxRunningAge:
+		// Not finished and update for metacacheMaxRunningAge, discard it.
+		return false
+	case cache.finished() && cache.endedCycle > currentCycle:
+		// Cycle is somehow bigger.
+		return false
+	case cache.finished() && currentCycle >= dataUsageUpdateDirCycles && cache.endedCycle < currentCycle-dataUsageUpdateDirCycles:
+		// Cycle is too old to be valuable.
+		return false
+	case cache.status == scanStateError || cache.status == scanStateNone:
+		// Remove failed listings
+		return false
+	}
+	return true
+}
+
+// canBeReplacedBy.
+// Both must pass the worthKeeping check.
+func (m *metacache) canBeReplacedBy(other *metacache) bool {
+	// If the other is older it can never replace.
+	if other.started.Before(m.started) {
+		return false
+	}
+
+	// Keep it around a bit longer.
+	if time.Since(m.lastHandout) < time.Hour {
+		return false
+	}
+
+	// Go through recursive combinations.
+	switch {
+	case !m.recursive && !other.recursive:
+		// If both not recursive root must match.
+		return m.root == other.root
+	case m.recursive && !other.recursive:
+		// A recursive can never be replaced by a non-recursive
+		return false
+	case !m.recursive && other.recursive:
+		// If other is recursive it must contain this root
+		return strings.HasPrefix(m.root, other.root)
+	case m.recursive && other.recursive:
+		// Similar if both are recursive
+		return strings.HasPrefix(m.root, other.root)
+	}
+	fmt.Println("unreachable")
+	return true
 }
 
 type bucketMetacache struct {
@@ -217,6 +277,7 @@ func (b *bucketMetacache) findCache(o listPathOptions) metacache {
 		}
 	}
 	if !best.started.IsZero() {
+		// TODO: Update handout time.
 		return best
 	}
 	if !o.Create {
@@ -236,6 +297,7 @@ func (b *bucketMetacache) findCache(o listPathOptions) metacache {
 		error:        "",
 		totalObjects: 0,
 		started:      UTCNow(),
+		lastHandout:  UTCNow(),
 		lastUpdate:   UTCNow(),
 		ended:        time.Time{},
 		startedCycle: o.CurrentCycle,
@@ -244,6 +306,39 @@ func (b *bucketMetacache) findCache(o listPathOptions) metacache {
 	}
 	b.caches[o.ID] = best
 	return best
+}
+
+// cleanup removes redundant and outdated entries.
+func (b *bucketMetacache) cleanup() {
+	// Entries to remove.
+	remove := make(map[string]struct{})
+	currentCycle := intDataUpdateTracker.current()
+
+	b.mu.RLock()
+	for id, cache := range b.caches {
+		if !cache.worthKeeping(currentCycle) {
+			remove[id] = struct{}{}
+		}
+	}
+
+	// Check all non-deleted against eachother.
+	// O(n*n), but should still be rather quick.
+	for id, cache := range b.caches {
+		if _, ok := remove[id]; ok {
+			continue
+		}
+		for _, cache2 := range b.caches {
+			if cache.canBeReplacedBy(&cache2) {
+				remove[id] = struct{}{}
+				break
+			}
+		}
+	}
+
+	b.mu.RUnlock()
+	for id := range remove {
+		b.deleteCache(id)
+	}
 }
 
 // updateCache will update a cache by id.

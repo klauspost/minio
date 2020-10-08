@@ -20,6 +20,8 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/minio/minio/cmd/logger"
 )
 
 // localMetacacheMgr is the *local* manager for this peer.
@@ -48,6 +50,7 @@ func (m *metacacheManager) initManager() {
 
 		t := time.NewTicker(time.Minute)
 		var exit bool
+		bg := context.Background()
 		for !exit {
 			select {
 			case <-t.C:
@@ -56,7 +59,10 @@ func (m *metacacheManager) initManager() {
 			}
 			m.mu.RLock()
 			for _, v := range m.buckets {
-				v.save(context.Background())
+				if !exit {
+					v.cleanup()
+				}
+				logger.LogIf(bg, v.save(bg))
 			}
 			m.mu.RUnlock()
 		}
