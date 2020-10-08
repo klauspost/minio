@@ -1302,8 +1302,8 @@ func (z *erasureZones) listObjectVersions(ctx context.Context, bucket, prefix, m
 				mu.Lock()
 				defer mu.Unlock()
 				errs[i] = err
-				//fmt.Println("set returned:", e.len(), err)
 				merged.merge(e, maxKeys+1)
+
 				// Resolve non-trivial conflicts
 				merged.deduplicate(func(existing, other *metaCacheEntry) (replace bool) {
 					if existing.isDir() {
@@ -1340,8 +1340,6 @@ func (z *erasureZones) listObjectVersions(ctx context.Context, bucket, prefix, m
 	merged.truncate(maxKeys)
 	entries := merged.fileInfoVersions(bucket)
 
-	//fmt.Println("merged:", merged.len())
-
 	for _, entry := range entries {
 		for _, version := range entry.Versions {
 			objInfo := version.ToObjectInfo(bucket, entry.Name)
@@ -1356,7 +1354,6 @@ func (z *erasureZones) listObjectVersions(ctx context.Context, bucket, prefix, m
 	if loi.IsTruncated {
 		loi.NextMarker = encodeMarker(loi.Objects[len(loi.Objects)-1].Name, opts.ID)
 	}
-	fmt.Println("objs:", len(loi.Objects), loi.IsTruncated, loi.NextMarker)
 
 	return loi, nil
 }
@@ -1658,6 +1655,27 @@ func (z *erasureZones) DeleteBucket(ctx context.Context, bucket string, forceDel
 	}
 
 	// Success.
+	return nil
+}
+
+// deleteAll will delete
+func (z *erasureZones) deleteAll(ctx context.Context, bucket, prefix string) error {
+	var wg sync.WaitGroup
+	for _, zone := range z.zones {
+		for _, set := range zone.sets {
+			for _, disk := range set.getDisks() {
+				if disk == nil {
+					continue
+				}
+				wg.Add(1)
+				go func(disk StorageAPI) {
+					defer wg.Done()
+					//disk.DeleteFile()
+				}(disk)
+			}
+		}
+	}
+	wg.Wait()
 	return nil
 }
 

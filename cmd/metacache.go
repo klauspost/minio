@@ -40,6 +40,9 @@ const (
 	scanStateStarted
 	scanStateSuccess
 	scanStateError
+
+	// Time in which the initiator of a scan must have reported back.
+	metacacheMaxRunningAge = time.Minute
 )
 
 //go:generate msgp -file $GOFILE -unexported
@@ -55,10 +58,10 @@ type metacache struct {
 	totalObjects uint64     `msg:"to"`
 	started      time.Time  `msg:"st"`
 	ended        time.Time  `msg:"end"`
+	lastUpdate   time.Time  `msg:"u"`
 	startedCycle uint64     `msg:"stc"`
 	endedCycle   uint64     `msg:"endc"`
 	dataVersion  uint8      `msg:"v"`
-	parts        int        `msg:"p"`
 }
 
 type bucketMetacache struct {
@@ -152,54 +155,78 @@ func (b *bucketMetacache) save(ctx context.Context) error {
 	return err
 }
 
+// findCache will attempt to find a matching cache for the provided options.
+// If a cache with the same ID exists already it will be returned.
+// If none can be found a new is created with the provided ID.
 func (b *bucketMetacache) findCache(o listPathOptions) metacache {
 	if o.Bucket != b.bucket {
 		logger.Info("bucketMetacache.findCache: bucket does not match", o.Bucket, b.bucket)
 		return metacache{}
 	}
 	thisRoot := baseDirFromPrefix(o.Prefix)
-	m := func() *metacache {
+
+	// Grab a write lock, since we create one if we cannot find one.
+	if o.Create {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+	} else {
 		b.mu.RLock()
 		defer b.mu.RUnlock()
-		var best metacache
-		for _, cached := range b.caches {
-			if cached.status == scanStateError || cached.dataVersion != metacacheStreamVersion {
-				continue
-			}
-			if cached.startedCycle < o.OldestCycle {
-				continue
-			}
-			// Root of what we are looking for must at least have
-			if !strings.HasPrefix(thisRoot, cached.root) {
-				continue
-			}
-			// If the existing listing wasn't recursive root must match.
-			if !cached.recursive && thisRoot != cached.root {
-				continue
-			}
-			if o.Recursive && !cached.recursive {
-				// If this is recursive the cached listing must be as well.
-				continue
-			}
-			if o.Separator != slashSeparator && !cached.recursive {
-				// Non slash separator requires recursive.
-				continue
-			}
-			if cached.started.Before(best.started) {
-				// If we already have a newer, keep that.
-				continue
-			}
-		}
-		if best.started.IsZero() {
-			return nil
-		}
-		return &best
-	}()
-	if m != nil {
-		return *m
 	}
-	// Return new
-	return metacache{
+
+	// Check if exists already.
+	if c, ok := b.caches[o.ID]; ok {
+		return c
+	}
+	var best metacache
+	for _, cached := range b.caches {
+		if cached.status == scanStateError || cached.dataVersion != metacacheStreamVersion {
+			continue
+		}
+		if cached.startedCycle < o.OldestCycle {
+			continue
+		}
+		// Root of what we are looking for must at least have
+		if !strings.HasPrefix(thisRoot, cached.root) {
+			continue
+		}
+		// If the existing listing wasn't recursive root must match.
+		if !cached.recursive && thisRoot != cached.root {
+			continue
+		}
+		if o.Recursive && !cached.recursive {
+			// If this is recursive the cached listing must be as well.
+			continue
+		}
+		if o.Separator != slashSeparator && !cached.recursive {
+			// Non slash separator requires recursive.
+			continue
+		}
+		if cached.ended.IsZero() && time.Since(cached.lastUpdate) > metacacheMaxRunningAge {
+			// Abandoned
+			continue
+		}
+		if !cached.ended.IsZero() && cached.endedCycle <= o.OldestCycle {
+			// If scan has ended the oldest requested must be less.
+			continue
+		}
+		if cached.started.Before(best.started) {
+			// If we already have a newer, keep that.
+			continue
+		}
+	}
+	if !best.started.IsZero() {
+		return best
+	}
+	if !o.Create {
+		return metacache{
+			id:     o.ID,
+			status: scanStateNone,
+		}
+	}
+
+	// Create new and add.
+	best = metacache{
 		id:           o.ID,
 		bucket:       o.Bucket,
 		root:         thisRoot,
@@ -208,11 +235,14 @@ func (b *bucketMetacache) findCache(o listPathOptions) metacache {
 		error:        "",
 		totalObjects: 0,
 		started:      UTCNow(),
+		lastUpdate:   UTCNow(),
 		ended:        time.Time{},
 		startedCycle: o.CurrentCycle,
 		endedCycle:   0,
 		dataVersion:  metacacheStreamVersion,
 	}
+	b.caches[o.ID] = best
+	return best
 }
 
 // updateCache will update a cache by id.
@@ -226,6 +256,7 @@ func (b *bucketMetacache) updateCache(id string) (cache *metacache, done func())
 		return nil, func() {}
 	}
 	return &c, func() {
+		c.lastUpdate = UTCNow()
 		b.caches[id] = c
 		b.mu.Unlock()
 	}
