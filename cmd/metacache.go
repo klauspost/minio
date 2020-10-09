@@ -457,6 +457,9 @@ func baseDirFromPrefix(prefix string) string {
 	if b == "." || b == "./" {
 		b = ""
 	}
+	if !strings.Contains(prefix, slashSeparator) {
+		b = ""
+	}
 	if len(b) > 0 && !strings.HasSuffix(b, slashSeparator) {
 		b += slashSeparator
 	}

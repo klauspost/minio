@@ -271,7 +271,7 @@ func (er erasureObjects) streamMetadataParts(ctx context.Context, o listPathOpti
 		if err != nil {
 			if err == errFileNotFound {
 				// Not ready yet...
-				// Maybe add some timeout here, but we could just wait for the client to give up.
+				// It would probably be reasonable to check the cache status.
 				time.Sleep(100 * time.Millisecond)
 				continue
 			}
@@ -369,7 +369,7 @@ func (er erasureObjects) streamMetadataParts(ctx context.Context, o listPathOpti
 // Will return io.EOF if continuing would not yield more results.
 func (er erasureObjects) listPath(ctx context.Context, o listPathOptions) (entries metaCacheEntriesSorted, err error) {
 	startTime := time.Now()
-	fmt.Println("set listing bucket:", o.Bucket, "basedir:", o.BaseDir)
+	fmt.Println("set listing bucket:", o.Bucket, "basedir:", o.BaseDir, "prefix:", o.Prefix)
 	// See if we have the listing stored.
 	if !o.Create {
 		entries, err := er.streamMetadataParts(ctx, o)
@@ -378,7 +378,6 @@ func (er erasureObjects) listPath(ctx context.Context, o listPathOptions) (entri
 			return entries, err
 		}
 		logger.LogIf(ctx, err)
-		// TODO: Should we start listing???
 		return entries, err
 	}
 
