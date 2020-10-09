@@ -150,7 +150,7 @@ func newBucketMetacache(bucket string) *bucketMetacache {
 // loadBucketMetaCache will load the cache from the object layer.
 // If the cache cannot be found a new one is created.
 func loadBucketMetaCache(ctx context.Context, bucket string) (*bucketMetacache, error) {
-	objAPI := newObjectLayerWithoutSafeModeFn()
+	objAPI := newObjectLayerFn()
 	if objAPI == nil {
 		return nil, errServerNotInitialized
 	}
@@ -192,7 +192,7 @@ func loadBucketMetaCache(ctx context.Context, bucket string) (*bucketMetacache, 
 
 // save the bucket cache to the object storage.
 func (b *bucketMetacache) save(ctx context.Context) error {
-	objAPI := newObjectLayerWithoutSafeModeFn()
+	objAPI := newObjectLayerFn()
 	if objAPI == nil {
 		return errServerNotInitialized
 	}
@@ -438,7 +438,7 @@ func (b *bucketMetacache) deleteCache(id string) {
 	b.mu.Unlock()
 	if ok {
 		ctx := context.Background()
-		objAPI := newObjectLayerWithoutSafeModeFn()
+		objAPI := newObjectLayerFn()
 		if objAPI == nil {
 			logger.LogIf(ctx, errors.New("bucketMetacache: no object layer"))
 			return

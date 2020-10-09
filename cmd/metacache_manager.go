@@ -43,10 +43,10 @@ type metacacheManager struct {
 func (m *metacacheManager) initManager() {
 	go func() {
 		// Start saver when object layer is ready.
-		objAPI := newObjectLayerWithoutSafeModeFn()
+		objAPI := newObjectLayerFn()
 		for objAPI == nil {
 			time.Sleep(time.Second)
-			objAPI = newObjectLayerWithoutSafeModeFn()
+			objAPI = newObjectLayerFn()
 		}
 		fmt.Println("init cleanup")
 
