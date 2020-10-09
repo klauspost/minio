@@ -100,7 +100,7 @@ func (m *metacache) worthKeeping(currentCycle uint64) bool {
 // Both must pass the worthKeeping check.
 func (m *metacache) canBeReplacedBy(other *metacache) bool {
 	// If the other is older it can never replace.
-	if other.started.Before(m.started) {
+	if other.started.Before(m.started) || m.id == other.id {
 		return false
 	}
 
@@ -293,7 +293,7 @@ func (b *bucketMetacache) findCache(o listPathOptions) metacache {
 			continue
 		}
 		if !cached.ended.IsZero() && cached.endedCycle <= o.OldestCycle {
-			debugPrint("cache %s ended and cycle <= oldest", cached.id)
+			debugPrint("cache %s ended and cycle (%v) <= oldest allowed (%v)", cached.id, cached.endedCycle, o.OldestCycle)
 			// If scan has ended the oldest requested must be less.
 			continue
 		}
@@ -307,7 +307,7 @@ func (b *bucketMetacache) findCache(o listPathOptions) metacache {
 	if !best.started.IsZero() {
 		if o.Create {
 			best.lastHandout = UTCNow()
-			b.caches[o.ID] = best
+			b.caches[best.id] = best
 			b.updated = true
 		}
 		debugPrint("returning cached")
@@ -337,6 +337,14 @@ func (b *bucketMetacache) cleanup() {
 	for id, cache := range b.caches {
 		if !cache.worthKeeping(currentCycle) {
 			fmt.Println("cache", id, "not worth keeping")
+			remove[id] = struct{}{}
+		}
+		if cache.id != id {
+			fmt.Println("cache ID mismatch", id, cache.id)
+			remove[id] = struct{}{}
+		}
+		if cache.bucket != b.bucket {
+			fmt.Println("cache bucket mismatch", b.bucket, cache.bucket)
 			remove[id] = struct{}{}
 		}
 	}

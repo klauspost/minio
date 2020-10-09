@@ -594,6 +594,9 @@ func (r *metacacheReader) readFn(fn func(entry metaCacheEntry) bool) error {
 			case io.EOF:
 				r.err = io.ErrUnexpectedEOF
 				return io.ErrUnexpectedEOF
+			case nil:
+				r.err = io.EOF
+				return io.EOF
 			}
 			return err
 		}

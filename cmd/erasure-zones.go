@@ -1313,8 +1313,7 @@ func (z *erasureZones) listObjectVersions(ctx context.Context, bucket, prefix, m
 
 	if createNew {
 		opts.CurrentCycle = intDataUpdateTracker.current()
-		// TODO: Find oldest bloom cycle somehow.
-		opts.OldestCycle = opts.CurrentCycle
+		opts.OldestCycle = globalNotificationSys.findEarliestCleanBloomFilter(ctx, pathJoin(opts.Bucket, opts.BaseDir))
 		var cache metacache
 		rpc := globalNotificationSys.restClientFromHash(bucket)
 		if rpc == nil {
@@ -1394,7 +1393,7 @@ func (z *erasureZones) listObjectVersions(ctx context.Context, bucket, prefix, m
 			loi.Objects = append(loi.Objects, objInfo)
 		}
 	}
-
+	loi.IsTruncated = loi.IsTruncated && len(loi.Objects) > 0
 	if loi.IsTruncated {
 		loi.NextMarker = encodeMarker(loi.Objects[len(loi.Objects)-1].Name, opts.ID)
 		fmt.Println(len(loi.Objects), "next marker:", loi.NextMarker)

@@ -197,7 +197,7 @@ func Test_metacacheReader_readFn(t *testing.T) {
 		i++
 		return true
 	})
-	if err != nil {
+	if err != io.EOF {
 		t.Fatal(err)
 	}
 }
@@ -303,7 +303,7 @@ func Test_newMetacacheStream(t *testing.T) {
 		return true
 	})
 	r.Close()
-	if err != nil {
+	if err != io.EOF {
 		t.Fatal(err)
 	}
 	err = w.Close()

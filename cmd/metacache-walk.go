@@ -92,7 +92,6 @@ func (s *xlStorage) WalkDir(ctx context.Context, opts WalkDirOptions, wr io.Writ
 
 	var scanDir func(path string) error
 	scanDir = func(current string) error {
-		//fmt.Println("scandir:", current)
 		entries, err := s.ListDir(ctx, opts.Bucket, current, -1)
 		if err != nil {
 			// Folder could have gone away in-between
@@ -101,6 +100,7 @@ func (s *xlStorage) WalkDir(ctx context.Context, opts WalkDirOptions, wr io.Writ
 			}
 			return nil
 		}
+
 		for i, entry := range entries {
 			if strings.HasSuffix(entry, slashSeparator) {
 				// Trim slash, maybe compiler is clever?
@@ -182,6 +182,17 @@ func (s *xlStorage) WalkDir(ctx context.Context, opts WalkDirOptions, wr io.Writ
 			default:
 				logger.LogIf(ctx, err)
 			}
+		}
+		// If directory entry left on stack, pop it now.
+		for len(dirStack) > 0 {
+			pop := dirStack[len(dirStack)-1]
+			out <- metaCacheEntry{name: pop}
+			if opts.Recursive {
+				// Scan folder we found. Should be in correct sort order where we are.
+				err := scanDir(pop)
+				logger.LogIf(ctx, err)
+			}
+			dirStack = dirStack[:len(dirStack)-1]
 		}
 		return nil
 	}

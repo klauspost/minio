@@ -227,7 +227,7 @@ func (r *metacacheReader) filter(o listPathOptions) (entries metaCacheEntriesSor
 			return entries, err
 		}
 	}
-	fmt.Println("forwarded to ", o.Prefix, "marker:", o.Marker)
+	fmt.Println("forwarded to ", o.Prefix, "marker:", o.Marker, "sep:", o.Separator)
 	// Filter
 	if !o.Recursive {
 		entries.o = make(metaCacheEntries, 0, o.Limit)
@@ -238,15 +238,16 @@ func (r *metacacheReader) filter(o listPathOptions) (entries metaCacheEntriesSor
 				pastPrefix = true
 				return false
 			}
-			if o.InclDeleted && entry.isObject() && entry.isLatestDeletemarker() {
-				return entries.len() >= o.Limit
+			if !o.InclDeleted && entry.isObject() && entry.isLatestDeletemarker() {
+				return entries.len() < o.Limit
 			}
 			if entry.isInDir(o.Prefix, o.Separator) {
 				entries.o = append(entries.o, entry)
 			}
-			return entries.len() >= o.Limit
+			return entries.len() < o.Limit
 		})
 		if err == io.EOF || pastPrefix {
+			fmt.Println("returning EOF")
 			return entries, io.EOF
 		}
 		return entries, err
@@ -264,11 +265,13 @@ func (er erasureObjects) streamMetadataParts(ctx context.Context, o listPathOpti
 			return entries, ctx.Err()
 		default:
 		}
+
 		// Load first part metadata...
 		fi, metaArr, onlineDisks, err := er.getObjectFileInfo(ctx, minioMetaBucket, o.objectPath(0), ObjectOptions{})
 		if err != nil {
 			if err == errFileNotFound {
 				// Not ready yet...
+				// Maybe add some timeout here, but we could just wait for the client to give up.
 				time.Sleep(100 * time.Millisecond)
 				continue
 			}
@@ -352,6 +355,7 @@ func (er erasureObjects) streamMetadataParts(ctx context.Context, o listPathOpti
 					return entries, io.EOF
 				}
 				partN++
+				fmt.Println("moving on to part", partN)
 			case nil:
 				// We stopped within the listing, we are done for now...
 				return entries, nil

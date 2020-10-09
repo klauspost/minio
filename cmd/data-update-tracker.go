@@ -22,6 +22,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"os"
@@ -166,6 +167,28 @@ func (d *dataUpdateTracker) current() uint64 {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.Current.idx
+}
+
+// latestWithDir returns the highest index that contains the directory.
+// This means that any cycle higher than this does NOT contain the entry.
+func (d *dataUpdateTracker) latestWithDir(dir string) uint64 {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.Current.bf.containsDir(dir) {
+		return d.Current.idx
+	}
+	idx := d.Current.idx - 1
+	for {
+		f := d.History.find(idx)
+		if f == nil || f.bf.containsDir(dir) {
+			if f == nil {
+				fmt.Println("no history for idx", idx)
+			}
+			break
+		}
+		idx--
+	}
+	return idx
 }
 
 // start will load the current data from the drives start collecting information and
@@ -535,7 +558,12 @@ func (d *dataUpdateTracker) filterFrom(ctx context.Context, oldest, newest uint6
 // The response will contain a bloom filter starting at index x up to, but not including index y.
 // If y is 0, the response will not update y, but return the currently recorded information
 // from the oldest (unless 0, then it will be all) until and including current y.
-func (d *dataUpdateTracker) cycleFilter(ctx context.Context, oldest, current uint64) (*bloomFilterResponse, error) {
+func (d *dataUpdateTracker) cycleFilter(ctx context.Context, req bloomFilterRequest) (*bloomFilterResponse, error) {
+	if req.OldestClean != "" {
+		return &bloomFilterResponse{OldestIdx: d.latestWithDir(req.OldestClean)}, nil
+	}
+	current := req.Current
+	oldest := req.Oldest
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if current == 0 {
@@ -602,6 +630,9 @@ func splitPathDeterministic(in string) []string {
 type bloomFilterRequest struct {
 	Oldest  uint64
 	Current uint64
+	// If set the oldest clean version will be returned in OldestIdx
+	// and the rest of the request will be ignored.
+	OldestClean string
 }
 
 type bloomFilterResponse struct {

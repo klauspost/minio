@@ -451,7 +451,7 @@ func (sys *NotificationSys) updateBloomFilter(ctx context.Context, current uint6
 
 	// Load initial state from local...
 	var bf *bloomFilter
-	bfr, err := intDataUpdateTracker.cycleFilter(ctx, req.Oldest, req.Current)
+	bfr, err := intDataUpdateTracker.cycleFilter(ctx, req)
 	logger.LogIf(ctx, err)
 	if err == nil && bfr.Complete {
 		nbf := intDataUpdateTracker.newBloomFilter()
@@ -517,7 +517,7 @@ func (sys *NotificationSys) collectBloomFilter(ctx context.Context, from uint64)
 
 	// Load initial state from local...
 	var bf *bloomFilter
-	bfr, err := intDataUpdateTracker.cycleFilter(ctx, req.Oldest, req.Current)
+	bfr, err := intDataUpdateTracker.cycleFilter(ctx, req)
 	logger.LogIf(ctx, err)
 	if err == nil && bfr.Complete {
 		nbf := intDataUpdateTracker.newBloomFilter()
@@ -575,6 +575,57 @@ func (sys *NotificationSys) collectBloomFilter(ctx context.Context, from uint64)
 	}
 	g.Wait()
 	return bf, nil
+}
+
+// updateBloomFilter will cycle all servers to the current index and
+// return a merged bloom filter if a complete one can be retrieved.
+func (sys *NotificationSys) findEarliestCleanBloomFilter(ctx context.Context, dir string) uint64 {
+
+	// Load initial state from local...
+	current := intDataUpdateTracker.current()
+	best := intDataUpdateTracker.latestWithDir(dir)
+	if best == current {
+		// If the current is dirty no need to check others.
+		fmt.Println("latest contains dir")
+		return current
+	}
+
+	var req = bloomFilterRequest{
+		Current:     0,
+		Oldest:      best,
+		OldestClean: dir,
+	}
+
+	var mu sync.Mutex
+	g := errgroup.WithNErrs(len(sys.peerClients))
+	for idx, client := range sys.peerClients {
+		if client == nil {
+			continue
+		}
+		client := client
+		g.Go(func() error {
+			serverBF, err := client.cycleServerBloomFilter(ctx, req)
+
+			// Keep lock while checking result.
+			mu.Lock()
+			defer mu.Unlock()
+
+			if err != nil {
+				// Error, don't assume clean.
+				best = current
+				logger.LogIf(ctx, err)
+				return nil
+			} else {
+				fmt.Println("server returned bloom", serverBF.OldestIdx, "current:", current)
+				if serverBF.OldestIdx > best {
+					best = serverBF.OldestIdx
+				}
+			}
+			return nil
+		}, idx)
+	}
+	g.Wait()
+	return best
 }
 
 // GetLocks - makes GetLocks RPC call on all peers.

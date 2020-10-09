@@ -55,6 +55,11 @@ func (e metaCacheEntry) hasPrefix(s string) bool {
 
 // isInDir returns whether the entry is in the dir when considering the separator.
 func (e metaCacheEntry) isInDir(dir, separator string) bool {
+	if len(dir) == 0 {
+		// Root
+		idx := strings.Index(e.name, separator)
+		return idx == -1 || idx == len(e.name)-len(separator)
+	}
 	ext := strings.TrimPrefix(e.name, dir)
 	if len(ext) != len(e.name) {
 		idx := strings.Index(ext, separator)

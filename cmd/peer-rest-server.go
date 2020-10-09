@@ -687,7 +687,7 @@ func (s *peerRESTServer) CycleServerBloomFilterHandler(w http.ResponseWriter, r 
 		s.writeErrorResponse(w, err)
 		return
 	}
-	bf, err := intDataUpdateTracker.cycleFilter(ctx, req.Oldest, req.Current)
+	bf, err := intDataUpdateTracker.cycleFilter(ctx, req)
 	if err != nil {
 		s.writeErrorResponse(w, err)
 		return
