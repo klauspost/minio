@@ -1264,6 +1264,8 @@ func (z *erasureZones) listObjectVersions(ctx context.Context, bucket, prefix, m
 		return loi, nil
 	}
 
+	// TODO : Move this generic code
+
 	// For delimiter and prefix as '/' we do not list anything at all
 	// since according to s3 spec we stop at the 'delimiter'
 	// along // with the prefix. On a flat namespace with 'prefix'
@@ -1307,6 +1309,27 @@ func (z *erasureZones) listObjectVersions(ctx context.Context, bucket, prefix, m
 		Recursive:   recursive,
 		Separator:   delimiter,
 		Create:      createNew,
+	}
+
+	if createNew {
+		opts.CurrentCycle = intDataUpdateTracker.current()
+		// TODO: Find oldest bloom cycle somehow.
+		opts.OldestCycle = opts.CurrentCycle
+		var cache metacache
+		rpc := globalNotificationSys.restClientFromHash(bucket)
+		if rpc == nil {
+			// Local
+			cache = localMetacacheMgr.getBucket(ctx, bucket).findCache(opts)
+		} else {
+			c, err := rpc.GetMetacacheListing(ctx, opts)
+			if err != nil {
+				return loi, err
+			}
+			cache = *c
+		}
+		// Only create if we created a new.
+		opts.Create = opts.ID == cache.id
+		opts.ID = cache.id
 	}
 
 	var merged metaCacheEntriesSorted
@@ -1374,6 +1397,7 @@ func (z *erasureZones) listObjectVersions(ctx context.Context, bucket, prefix, m
 
 	if loi.IsTruncated {
 		loi.NextMarker = encodeMarker(loi.Objects[len(loi.Objects)-1].Name, opts.ID)
+		fmt.Println(len(loi.Objects), "next marker:", loi.NextMarker)
 	}
 
 	return loi, nil

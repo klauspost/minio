@@ -29,10 +29,8 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/s2"
-
-	"github.com/minio/minio/pkg/hash"
-
 	"github.com/minio/minio/cmd/logger"
+	"github.com/minio/minio/pkg/hash"
 	"github.com/tinylib/msgp/msgp"
 )
 
@@ -58,7 +56,6 @@ type metacache struct {
 	recursive    bool       `msg:"rec"`
 	status       scanStatus `msg:"stat"`
 	error        string     `msg:"err"`
-	totalObjects uint64     `msg:"to"`
 	started      time.Time  `msg:"st"`
 	ended        time.Time  `msg:"end"`
 	lastUpdate   time.Time  `msg:"u"`
@@ -76,6 +73,7 @@ func (m *metacache) finished() bool {
 	return !m.ended.IsZero()
 }
 
+// worthKeeping indicates if the cache by itself is worth keeping.
 func (m *metacache) worthKeeping(currentCycle uint64) bool {
 	if m == nil {
 		return false
@@ -142,6 +140,13 @@ type bucketMetacache struct {
 	updated bool         `msg:"-"`
 }
 
+func newBucketMetacache(bucket string) *bucketMetacache {
+	return &bucketMetacache{
+		bucket: bucket,
+		caches: make(map[string]metacache, 10),
+	}
+}
+
 // loadBucketMetaCache will load the cache from the object layer.
 // If the cache cannot be found a new one is created.
 func loadBucketMetaCache(ctx context.Context, bucket string) (*bucketMetacache, error) {
@@ -167,17 +172,20 @@ func loadBucketMetaCache(ctx context.Context, bucket string) (*bucketMetacache, 
 	err := objAPI.GetObject(ctx, minioMetaBucket, pathJoin("buckets", bucket, ".metacache", "index.s2"), 0, -1, w, "", ObjectOptions{})
 	logger.LogIf(ctx, w.CloseWithError(err))
 	if err != nil {
-		if err == errFileNotFound {
+		fmt.Println("Cache for bucket", bucket, "load err:", err)
+
+		if isErrObjectNotFound(err) {
 			err = nil
 		} else {
 			logger.LogIf(ctx, err)
 		}
-		return &bucketMetacache{bucket: bucket}, err
+		return newBucketMetacache(bucket), err
 	}
 	wg.Wait()
+	fmt.Println("loaded cache with ", len(meta.caches), "caches")
 	if decErr != nil {
 		logger.LogIf(ctx, decErr)
-		return &bucketMetacache{bucket: bucket}, err
+		return newBucketMetacache(bucket), err
 	}
 	return &meta, nil
 }
@@ -229,7 +237,11 @@ func (b *bucketMetacache) findCache(o listPathOptions) metacache {
 		logger.Info("bucketMetacache.findCache: bucket does not match", o.Bucket, b.bucket)
 		return metacache{}
 	}
-	thisRoot := baseDirFromPrefix(o.Prefix)
+
+	debugPrint := func(msg string, data ...interface{}) {}
+	if true {
+		debugPrint = logger.Info
+	}
 
 	// Grab a write lock, since we create one if we cannot find one.
 	if o.Create {
@@ -244,45 +256,61 @@ func (b *bucketMetacache) findCache(o listPathOptions) metacache {
 	if c, ok := b.caches[o.ID]; ok {
 		return c
 	}
+
 	var best metacache
 	for _, cached := range b.caches {
 		if cached.status == scanStateError || cached.dataVersion != metacacheStreamVersion {
+			debugPrint("cache %s state or stream version mismatch", cached.id)
 			continue
 		}
 		if cached.startedCycle < o.OldestCycle {
+			debugPrint("cache %s cycle too old", cached.id)
 			continue
 		}
 		// Root of what we are looking for must at least have
-		if !strings.HasPrefix(thisRoot, cached.root) {
+		if !strings.HasPrefix(o.BaseDir, cached.root) {
+			debugPrint("cache %s prefix mismatch, cached:%v, want:%v", cached.id, cached.root, o.BaseDir)
 			continue
 		}
 		// If the existing listing wasn't recursive root must match.
-		if !cached.recursive && thisRoot != cached.root {
+		if !cached.recursive && o.BaseDir != cached.root {
+			debugPrint("cache %s  non rec prefix mismatch, cached:%v, want:%v", cached.id, cached.root, o.BaseDir)
 			continue
 		}
 		if o.Recursive && !cached.recursive {
+			debugPrint("cache %s not recursive", cached.id)
 			// If this is recursive the cached listing must be as well.
 			continue
 		}
 		if o.Separator != slashSeparator && !cached.recursive {
+			debugPrint("cache %s not slashsep and not recursive", cached.id)
 			// Non slash separator requires recursive.
 			continue
 		}
 		if cached.ended.IsZero() && time.Since(cached.lastUpdate) > metacacheMaxRunningAge {
+			debugPrint("cache %s not running, time: %v", cached.id, time.Since(cached.lastUpdate))
 			// Abandoned
 			continue
 		}
 		if !cached.ended.IsZero() && cached.endedCycle <= o.OldestCycle {
+			debugPrint("cache %s ended and cycle <= oldest", cached.id)
 			// If scan has ended the oldest requested must be less.
 			continue
 		}
 		if cached.started.Before(best.started) {
+			debugPrint("cache %s disregarded - we have a better", cached.id)
 			// If we already have a newer, keep that.
 			continue
 		}
+		best = cached
 	}
 	if !best.started.IsZero() {
-		// TODO: Update handout time.
+		if o.Create {
+			best.lastHandout = UTCNow()
+			b.caches[o.ID] = best
+			b.updated = true
+		}
+		debugPrint("returning cached")
 		return best
 	}
 	if !o.Create {
@@ -293,23 +321,9 @@ func (b *bucketMetacache) findCache(o listPathOptions) metacache {
 	}
 
 	// Create new and add.
-	best = metacache{
-		id:           o.ID,
-		bucket:       o.Bucket,
-		root:         thisRoot,
-		recursive:    o.Recursive,
-		status:       scanStateStarted,
-		error:        "",
-		totalObjects: 0,
-		started:      UTCNow(),
-		lastHandout:  UTCNow(),
-		lastUpdate:   UTCNow(),
-		ended:        time.Time{},
-		startedCycle: o.CurrentCycle,
-		endedCycle:   0,
-		dataVersion:  metacacheStreamVersion,
-	}
+	best = o.newMetacache()
 	b.caches[o.ID] = best
+	b.updated = true
 	return best
 }
 
@@ -322,6 +336,7 @@ func (b *bucketMetacache) cleanup() {
 	b.mu.RLock()
 	for id, cache := range b.caches {
 		if !cache.worthKeeping(currentCycle) {
+			fmt.Println("cache", id, "not worth keeping")
 			remove[id] = struct{}{}
 		}
 	}
@@ -334,8 +349,11 @@ func (b *bucketMetacache) cleanup() {
 		}
 		for _, cache2 := range b.caches {
 			if cache.canBeReplacedBy(&cache2) {
+				fmt.Println("cache", id, "can be replaced by", cache2.id)
 				remove[id] = struct{}{}
 				break
+			} else {
+				fmt.Println("cache", id, "can NOT be replaced by", cache2.id)
 			}
 		}
 	}
@@ -363,6 +381,33 @@ func (b *bucketMetacache) updateCache(id string) (cache *metacache, done func())
 	}
 }
 
+// updateCacheEntry will update a cache.
+// Returns the updated status.
+func (b *bucketMetacache) updateCacheEntry(update metacache) (metacache, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	existing, ok := b.caches[update.id]
+	if !ok {
+		return update, errFileNotFound
+	}
+	fmt.Println("got update", update)
+	existing.lastUpdate = UTCNow()
+	if existing.status == scanStateStarted && update.status != scanStateStarted {
+		existing.status = update.status
+	}
+	if existing.status == scanStateSuccess && update.status == scanStateSuccess {
+		existing.ended = UTCNow()
+		existing.endedCycle = update.endedCycle
+	}
+	if existing.error == "" && update.error != "" {
+		existing.error = update.error
+		existing.status = scanStateError
+	}
+	b.caches[update.id] = existing
+	b.updated = true
+	return existing, nil
+}
+
 // getCache will return a clone of
 func (b *bucketMetacache) getCache(id string) *metacache {
 	b.mu.RLock()
@@ -375,6 +420,7 @@ func (b *bucketMetacache) getCache(id string) *metacache {
 }
 
 func (b *bucketMetacache) deleteCache(id string) {
+	fmt.Println("deleting cache", id)
 	b.mu.Lock()
 	c, ok := b.caches[id]
 	if ok {

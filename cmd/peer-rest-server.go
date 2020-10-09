@@ -33,6 +33,7 @@ import (
 	"github.com/minio/minio/pkg/event"
 	"github.com/minio/minio/pkg/madmin"
 	trace "github.com/minio/minio/pkg/trace"
+	"github.com/tinylib/msgp/msgp"
 )
 
 // To abstract a node over network.
@@ -704,12 +705,12 @@ func (s *peerRESTServer) GetMetacacheListingHandler(w http.ResponseWriter, r *ht
 
 	var req listPathOptions
 	err := gob.NewDecoder(r.Body).Decode(&req)
-	if err != nil {
+	if err != nil && err != io.EOF {
 		s.writeErrorResponse(w, err)
 		return
 	}
 	resp := localMetacacheMgr.getBucket(ctx, req.Bucket).findCache(req)
-	logger.LogIf(ctx, gob.NewEncoder(w).Encode(resp))
+	logger.LogIf(ctx, msgp.Encode(w, &resp))
 }
 
 func (s *peerRESTServer) UpdateMetacacheListingHandler(w http.ResponseWriter, r *http.Request) {
@@ -720,7 +721,7 @@ func (s *peerRESTServer) UpdateMetacacheListingHandler(w http.ResponseWriter, r 
 	ctx := newContext(r, w, "UpdateMetacacheListing")
 
 	var req metacache
-	err := gob.NewDecoder(r.Body).Decode(&req)
+	err := msgp.Decode(r.Body, &req)
 	if err != nil {
 		s.writeErrorResponse(w, err)
 		return
@@ -731,14 +732,13 @@ func (s *peerRESTServer) UpdateMetacacheListingHandler(w http.ResponseWriter, r 
 		return
 	}
 
-	cache, done := b.updateCache(req.id)
-	if cache == nil {
-		s.writeErrorResponse(w, errFileNotFound)
+	cache, err := b.updateCacheEntry(req)
+	if err != nil {
+		s.writeErrorResponse(w, err)
 		return
 	}
-	*cache = req
-	done()
-	// Return no content if ok.
+	// Return updated metadata.
+	logger.LogIf(ctx, msgp.Encode(w, &cache))
 }
 
 // PutBucketNotificationHandler - Set bucket policy.

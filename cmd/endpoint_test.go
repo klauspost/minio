@@ -395,7 +395,7 @@ func TestGetRemotePeers(t *testing.T) {
 				t.Fatalf("error: expected = <nil>, got = %v", err)
 			}
 		}
-		remotePeers := GetRemotePeers(zendpoints)
+		remotePeers, _ := zendpoints.peers()
 		if !reflect.DeepEqual(remotePeers, testCase.expectedResult) {
 			t.Fatalf("expected: %v, got: %v", testCase.expectedResult, remotePeers)
 		}

@@ -25,14 +25,13 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/minio/minio/cmd/config/storageclass"
 	xhttp "github.com/minio/minio/cmd/http"
-
-	"github.com/minio/minio/pkg/hash"
-
 	"github.com/minio/minio/cmd/logger"
+	"github.com/minio/minio/pkg/hash"
 )
 
 type listPathOptions struct {
@@ -175,6 +174,25 @@ func (o *listPathOptions) findFirstPart(fi FileInfo) (int, error) {
 	return -2, io.ErrUnexpectedEOF
 }
 
+// newMetacache constructs a new metacache from the options.
+func (o listPathOptions) newMetacache() metacache {
+	return metacache{
+		id:           o.ID,
+		bucket:       o.Bucket,
+		root:         o.BaseDir,
+		recursive:    o.Recursive,
+		status:       scanStateStarted,
+		error:        "",
+		started:      UTCNow(),
+		lastHandout:  UTCNow(),
+		lastUpdate:   UTCNow(),
+		ended:        time.Time{},
+		startedCycle: o.CurrentCycle,
+		endedCycle:   0,
+		dataVersion:  metacacheStreamVersion,
+	}
+}
+
 func getMetacacheBlockInfo(fi FileInfo, block int) (*metacacheBlock, error) {
 	var tmp metacacheBlock
 	partKey := fmt.Sprintf("%s-metacache-part-%d", ReservedMetadataPrefixLower, block)
@@ -191,7 +209,7 @@ func metacachePrefixForID(bucket, id string) string {
 
 // objectPath returns the object path of the cache.
 func (o *listPathOptions) objectPath(block int) string {
-	return pathJoin(metacachePrefixForID(o.Bucket, o.ID), "block-", strconv.Itoa(block)+".s2")
+	return pathJoin(metacachePrefixForID(o.Bucket, o.ID), "block-"+strconv.Itoa(block)+".s2")
 }
 
 // filter will apply the options and return the number of objects requested by the limit.
@@ -234,11 +252,7 @@ func (r *metacacheReader) filter(o listPathOptions) (entries metaCacheEntriesSor
 		return entries, err
 	}
 
-	fmt.Println("returning", o.Limit, "results")
-	defer fmt.Println("returned")
-
 	// We should not need to filter more.
-	//  FIXME: Really, what about stopping when we get outside the requested prefix?
 	return r.readN(o.Limit, o.InclDeleted, o.Prefix)
 }
 
@@ -294,10 +308,18 @@ func (er erasureObjects) streamMetadataParts(ctx context.Context, o listPathOpti
 					return entries, err
 				case nil:
 					loadedPart = partN
+					bi, err := getMetacacheBlockInfo(fi, partN)
+					logger.LogIf(ctx, err)
+					if err == nil {
+						if bi.pastPrefix(o.Prefix) {
+							return entries, io.EOF
+						}
+					}
 				}
 				if fi.Deleted {
 					return entries, io.ErrUnexpectedEOF
 				}
+
 			}
 			buf.Reset()
 			err := er.getObjectWithFileInfo(ctx, minioMetaBucket, o.objectPath(partN), 0, fi.Size, &buf, fi, metaArr, onlineDisks)
@@ -323,6 +345,10 @@ func (er erasureObjects) streamMetadataParts(ctx context.Context, o listPathOpti
 				logger.LogIf(ctx, err)
 				if err != nil || bi.EOS {
 					// We are done and there are no more parts.
+					return entries, io.EOF
+				}
+				if bi.endedPrefix(o.Prefix) {
+					// Nothing more for prefix.
 					return entries, io.EOF
 				}
 				partN++
@@ -352,8 +378,8 @@ func (er erasureObjects) listPath(ctx context.Context, o listPathOptions) (entri
 		return entries, err
 	}
 
-	// Disconnect from call above.
-	ctx = context.Background()
+	// Disconnect from call above, but cancel on exit.
+	ctx, cancel := context.WithCancel(GlobalContext)
 	// We need to ask disks.
 	var disks []StorageAPI
 	for _, d := range er.getLoadBalancedDisks() {
@@ -389,7 +415,6 @@ func (er erasureObjects) listPath(ctx context.Context, o listPathOptions) (entri
 		}()
 	}
 
-	// FIXME: Return when we have enough results...
 	// Create output for our results.
 	const blockSize = 5000
 	cacheCh := make(chan metaCacheEntry, blockSize)
@@ -403,23 +428,69 @@ func (er erasureObjects) listPath(ctx context.Context, o listPathOptions) (entri
 	}
 
 	go func() {
+		defer cancel()
+		meta := o.newMetacache()
+		var metaMu sync.Mutex
+		// Save continous updates
+		go func() {
+			client := globalNotificationSys.restClientFromHash(o.Bucket)
+			ticker := time.NewTicker(10 * time.Second)
+			defer ticker.Stop()
+			var exit bool
+			for !exit {
+				select {
+				case <-ticker.C:
+				case <-ctx.Done():
+					exit = true
+				}
+				metaMu.Lock()
+				lm := meta
+				metaMu.Unlock()
+				meta.endedCycle = intDataUpdateTracker.current()
+				var err error
+				if client == nil {
+					lm, err = localMetacacheMgr.getBucket(GlobalContext, o.Bucket).updateCacheEntry(lm)
+				} else {
+					lm, err = client.UpdateMetacacheListing(context.Background(), lm)
+				}
+				logger.LogIf(ctx, err)
+				if lm.status == scanStateError {
+					cancel()
+					exit = true
+				}
+			}
+		}()
+
 		// Write results to disk.
 		bw := newMetacacheBlockWriter(cacheCh, func(b *metacacheBlock) error {
 			fmt.Println("SAVING BLOCK", b.n, "to", o.objectPath(b.n))
 			r, err := hash.NewReader(bytes.NewBuffer(b.data), int64(len(b.data)), "", "", int64(len(b.data)), false)
 			logger.LogIf(ctx, err)
-			meta := b.headerKV()
-			meta[xhttp.AmzStorageClass] = storageclass.RRS
-			_, err = er.putObject(ctx, minioMetaBucket, o.objectPath(b.n), NewPutObjReader(r, nil, nil), ObjectOptions{UserDefined: meta})
-			if err != nil || b.n == 0 {
-				logger.LogIf(ctx, err)
+			custom := b.headerKV()
+			custom[xhttp.AmzStorageClass] = storageclass.RRS
+			_, err = er.putObject(ctx, minioMetaBucket, o.objectPath(b.n), NewPutObjReader(r, nil, nil), ObjectOptions{UserDefined: custom})
+			if err != nil {
+				metaMu.Lock()
+				meta.status = scanStateError
+				meta.error = err.Error()
+				metaMu.Unlock()
+				cancel()
 				return err
 			}
+			if b.n == 0 {
+				return nil
+			}
 			// Update block 0 metadata.
-			// TODO: Potentially a bit risky. Should we just retry?
-			return er.updateObjectMeta(ctx, minioMetaBucket, o.objectPath(0), b.headerKV(), ObjectOptions{})
+			for {
+				err := er.updateObjectMeta(ctx, minioMetaBucket, o.objectPath(0), b.headerKV(), ObjectOptions{})
+				if err == nil {
+					break
+				}
+				logger.LogIf(ctx, err)
+				time.Sleep(100 * time.Millisecond)
+			}
+			return nil
 		})
-		defer bw.Close()
 
 		// Merge results from the readers.
 		resolver := metadataResolutionParams{
@@ -443,7 +514,11 @@ func (er erasureObjects) listPath(ctx context.Context, o listPathOptions) (entri
 				case nil:
 				default:
 					closeChannels()
-					// FIXME: Handle error
+					metaMu.Lock()
+					meta.status = scanStateError
+					meta.error = err.Error()
+					metaMu.Unlock()
+					cancel()
 					return
 				}
 				if entry.name == current.name || current.name == "" {
@@ -469,6 +544,7 @@ func (er erasureObjects) listPath(ctx context.Context, o listPathOptions) (entri
 			}
 			// Break if all at EOF.
 			if atEOF == len(readers) {
+				fmt.Println("at EOF")
 				break
 			}
 			if agree == len(readers) {
@@ -495,6 +571,15 @@ func (er erasureObjects) listPath(ctx context.Context, o listPathOptions) (entri
 			}
 		}
 		closeChannels()
+		metaMu.Lock()
+		if err := bw.Close(); err != nil {
+			meta.error = err.Error()
+			meta.status = scanStateError
+		} else {
+			meta.status = scanStateSuccess
+			meta.endedCycle = intDataUpdateTracker.current()
+		}
+		metaMu.Unlock()
 	}()
 
 	return filteredResults(), nil

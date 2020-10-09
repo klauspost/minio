@@ -29,6 +29,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cespare/xxhash/v2"
 	"github.com/klauspost/compress/zip"
 	"github.com/minio/minio-go/v7/pkg/set"
 	"github.com/minio/minio/cmd/crypto"
@@ -49,6 +50,7 @@ type NotificationSys struct {
 	bucketRulesMap             map[string]event.RulesMap
 	bucketRemoteTargetRulesMap map[string]map[event.TargetID]event.RulesMap
 	peerClients                []*peerRESTClient
+	allPeerClients             []*peerRESTClient
 }
 
 // GetARNList - returns available ARNs.
@@ -1260,15 +1262,27 @@ func (sys *NotificationSys) GetLocalDiskIDs(ctx context.Context) (localDiskIDs [
 	return localDiskIDs
 }
 
+// restClientFromHash will return a deterministic peerRESTClient based on s.
+// Will return nil if client is local.
+func (sys *NotificationSys) restClientFromHash(s string) (client *peerRESTClient) {
+	if len(sys.peerClients) == 0 {
+		return nil
+	}
+	idx := xxhash.Sum64String(s) % uint64(len(sys.allPeerClients))
+	return sys.allPeerClients[idx]
+}
+
 // NewNotificationSys - creates new notification system object.
 func NewNotificationSys(endpoints EndpointZones) *NotificationSys {
 	// targetList/bucketRulesMap/bucketRemoteTargetRulesMap are populated by NotificationSys.Init()
+	remote, all := newPeerRestClients(endpoints)
 	return &NotificationSys{
 		targetList:                 event.NewTargetList(),
 		targetResCh:                make(chan event.TargetIDResult),
 		bucketRulesMap:             make(map[string]event.RulesMap),
 		bucketRemoteTargetRulesMap: make(map[string]map[event.TargetID]event.RulesMap),
-		peerClients:                newPeerRestClients(endpoints),
+		peerClients:                remote,
+		allPeerClients:             all,
 	}
 }
 

@@ -24,11 +24,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 
-	"github.com/minio/minio/cmd/logger"
-
 	"github.com/klauspost/compress/s2"
+	"github.com/minio/minio/cmd/logger"
 	"github.com/tinylib/msgp/msgp"
 )
 
@@ -464,8 +464,16 @@ func (r *metacacheReader) readN(n int, inclDeleted bool, prefix string) (metaCac
 			return metaCacheEntriesSorted{}, err
 		}
 	}
+	next, err := r.peek()
+	if err != nil {
+		return metaCacheEntriesSorted{}, err
+	}
+	if !next.hasPrefix(prefix) {
+		return metaCacheEntriesSorted{}, io.EOF
+	}
+
 	if r.current.name != "" {
-		if inclDeleted || !r.current.isLatestDeletemarker() && r.current.hasPrefix(prefix) {
+		if (inclDeleted || !r.current.isLatestDeletemarker()) && r.current.hasPrefix(prefix) {
 			res = append(res, r.current)
 		}
 		r.current.name = ""
@@ -743,7 +751,6 @@ func newMetacacheBlockWriter(in <-chan metaCacheEntry, nextBlock func(b *metacac
 		var buf bytes.Buffer
 		block := newMetacacheWriter(&buf, 1<<20)
 		finishBlock := func() {
-			fmt.Println("FinishBlock")
 			err := block.Close()
 			if err != nil {
 				w.streamErr = err
@@ -777,7 +784,7 @@ func newMetacacheBlockWriter(in <-chan metaCacheEntry, nextBlock func(b *metacac
 			}
 			current.Last = o.name
 		}
-		fmt.Println("Exited input", n, "status", w.streamErr)
+		fmt.Println("stream writer exited input", n, "streamErr:", w.streamErr)
 		if n > 0 {
 			current.EOS = true
 			finishBlock()
@@ -809,4 +816,23 @@ func (b metacacheBlock) headerKV() map[string]string {
 		return nil
 	}
 	return map[string]string{fmt.Sprintf("%s-metacache-part-%d", ReservedMetadataPrefixLower, b.n): string(v)}
+}
+
+// pastPrefix returns true if the given prefix is before start of the block.
+func (b metacacheBlock) pastPrefix(prefix string) bool {
+	if prefix == "" || strings.HasPrefix(b.First, prefix) {
+		return false
+	}
+	// We have checked if prefix matches, so we can do direct compare.
+	return b.First > prefix
+}
+
+// endedPrefix returns true if the given prefix ends within the block.
+func (b metacacheBlock) endedPrefix(prefix string) bool {
+	if prefix == "" || strings.HasPrefix(b.Last, prefix) {
+		return false
+	}
+
+	// We have checked if prefix matches, so we can do direct compare.
+	return b.Last > prefix
 }
