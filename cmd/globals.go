@@ -210,7 +210,8 @@ var (
 	globalDomainNames []string      // Root domains for virtual host style requests
 	globalDomainIPs   set.StringSet // Root domain IP address(s) for a distributed MinIO deployment
 
-	globalOperationTimeout = newDynamicTimeout(10*time.Minute, 5*time.Minute) // default timeout for general ops
+	globalOperationTimeout       = newDynamicTimeout(10*time.Minute, 5*time.Minute) // default timeout for general ops
+	globalDeleteOperationTimeout = newDynamicTimeout(5*time.Minute, 1*time.Minute)  // default time for delete ops
 
 	globalBucketObjectLockSys *BucketObjectLockSys
 	globalBucketQuotaSys      *BucketQuotaSys
@@ -266,11 +267,6 @@ var (
 	// The always present healing routine ready to heal objects
 	globalBackgroundHealRoutine *healRoutine
 	globalBackgroundHealState   *allHealState
-
-	// Only enabled when one of the sub-systems fail
-	// to initialize, this allows for administrators to
-	// fix the system.
-	globalSafeMode bool
 
 	// If writes to FS backend should be O_SYNC.
 	globalFSOSync bool

@@ -657,13 +657,13 @@ func (sys *NotificationSys) GetLocks(ctx context.Context, r *http.Request) []*Pe
 	}
 	// Once we have received all the locks currently used from peers
 	// add the local peer locks list as well.
-	var getRespLocks GetLocksResp
+	llockers := make(GetLocksResp, 0, len(globalLockServers))
 	for _, llocker := range globalLockServers {
-		getRespLocks = append(getRespLocks, llocker.DupLockMap())
+		llockers = append(llockers, llocker.DupLockMap())
 	}
 	locksResp = append(locksResp, &PeerLocks{
 		Addr:  getHostName(r),
-		Locks: getRespLocks,
+		Locks: llockers,
 	})
 	return locksResp
 }
@@ -736,18 +736,12 @@ func (sys *NotificationSys) Init(ctx context.Context, buckets []BucketInfo, objA
 		return errServerNotInitialized
 	}
 
-	// In gateway mode, notifications are not supported.
+	// In gateway mode, notifications are not supported - except NAS gateway.
 	if globalIsGateway && !objAPI.IsNotificationSupported() {
 		return nil
 	}
 
-	if globalConfigTargetList != nil {
-		for _, target := range globalConfigTargetList.Targets() {
-			if err := sys.targetList.Add(target); err != nil {
-				return err
-			}
-		}
-	}
+	logger.LogIf(ctx, sys.targetList.Add(globalConfigTargetList.Targets()...))
 
 	go func() {
 		for res := range sys.targetResCh {

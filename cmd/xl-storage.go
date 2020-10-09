@@ -366,7 +366,7 @@ func (s *xlStorage) CrawlAndGetDataUsage(ctx context.Context, cache dataUsageCac
 	}
 
 	// Get object api
-	objAPI := newObjectLayerWithoutSafeModeFn()
+	objAPI := newObjectLayerFn()
 	if objAPI == nil {
 		return cache, errServerNotInitialized
 	}
@@ -661,21 +661,7 @@ func (s *xlStorage) ListVols(context.Context) (volsInfo []VolInfo, err error) {
 		atomic.AddInt32(&s.activeIOCount, -1)
 	}()
 
-	volsInfo, err = listVols(s.diskPath)
-	if err != nil {
-		if isSysErrIO(err) {
-			return nil, errFaultyDisk
-		}
-		return nil, err
-	}
-	for i, vol := range volsInfo {
-		volInfo := VolInfo{
-			Name:    vol.Name,
-			Created: vol.Created,
-		}
-		volsInfo[i] = volInfo
-	}
-	return volsInfo, nil
+	return listVols(s.diskPath)
 }
 
 // List all the volumes from diskPath.

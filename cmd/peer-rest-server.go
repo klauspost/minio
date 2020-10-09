@@ -48,7 +48,7 @@ func (s *peerRESTServer) GetLocksHandler(w http.ResponseWriter, r *http.Request)
 
 	ctx := newContext(r, w, "GetLocks")
 
-	llockers := make([]map[string][]lockRequesterInfo, 0, len(globalLockServers))
+	llockers := make(GetLocksResp, 0, len(globalLockServers))
 	for _, llocker := range globalLockServers {
 		llockers = append(llockers, llocker.DupLockMap())
 	}
@@ -65,7 +65,7 @@ func (s *peerRESTServer) DeletePolicyHandler(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	objAPI := newObjectLayerWithoutSafeModeFn()
+	objAPI := newObjectLayerFn()
 	if objAPI == nil {
 		s.writeErrorResponse(w, errServerNotInitialized)
 		return
@@ -98,7 +98,7 @@ func (s *peerRESTServer) LoadPolicyHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	objAPI := newObjectLayerWithoutSafeModeFn()
+	objAPI := newObjectLayerFn()
 	if objAPI == nil {
 		s.writeErrorResponse(w, errServerNotInitialized)
 		return
@@ -131,7 +131,7 @@ func (s *peerRESTServer) LoadPolicyMappingHandler(w http.ResponseWriter, r *http
 		return
 	}
 
-	objAPI := newObjectLayerWithoutSafeModeFn()
+	objAPI := newObjectLayerFn()
 	if objAPI == nil {
 		s.writeErrorResponse(w, errServerNotInitialized)
 		return
@@ -165,7 +165,7 @@ func (s *peerRESTServer) DeleteServiceAccountHandler(w http.ResponseWriter, r *h
 		return
 	}
 
-	objAPI := newObjectLayerWithoutSafeModeFn()
+	objAPI := newObjectLayerFn()
 	if objAPI == nil {
 		s.writeErrorResponse(w, errServerNotInitialized)
 		return
@@ -198,7 +198,7 @@ func (s *peerRESTServer) LoadServiceAccountHandler(w http.ResponseWriter, r *htt
 		return
 	}
 
-	objAPI := newObjectLayerWithoutSafeModeFn()
+	objAPI := newObjectLayerFn()
 	if objAPI == nil {
 		s.writeErrorResponse(w, errServerNotInitialized)
 		return
@@ -231,7 +231,7 @@ func (s *peerRESTServer) DeleteUserHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	objAPI := newObjectLayerWithoutSafeModeFn()
+	objAPI := newObjectLayerFn()
 	if objAPI == nil {
 		s.writeErrorResponse(w, errServerNotInitialized)
 		return
@@ -264,7 +264,7 @@ func (s *peerRESTServer) LoadUserHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	objAPI := newObjectLayerWithoutSafeModeFn()
+	objAPI := newObjectLayerFn()
 	if objAPI == nil {
 		s.writeErrorResponse(w, errServerNotInitialized)
 		return
@@ -308,7 +308,7 @@ func (s *peerRESTServer) LoadGroupHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	objAPI := newObjectLayerWithoutSafeModeFn()
+	objAPI := newObjectLayerFn()
 	if objAPI == nil {
 		s.writeErrorResponse(w, errServerNotInitialized)
 		return
@@ -610,7 +610,7 @@ func (s *peerRESTServer) LoadBucketMetadataHandler(w http.ResponseWriter, r *htt
 		return
 	}
 
-	objAPI := newObjectLayerWithoutSafeModeFn()
+	objAPI := newObjectLayerFn()
 	if objAPI == nil {
 		s.writeErrorResponse(w, errServerNotInitialized)
 		return
@@ -658,7 +658,7 @@ func (s *peerRESTServer) ReloadFormatHandler(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	objAPI := newObjectLayerWithoutSafeModeFn()
+	objAPI := newObjectLayerFn()
 	if objAPI == nil {
 		s.writeErrorResponse(w, errServerNotInitialized)
 		return
@@ -813,7 +813,7 @@ func (s *peerRESTServer) GetLocalDiskIDs(w http.ResponseWriter, r *http.Request)
 
 	ctx := newContext(r, w, "GetLocalDiskIDs")
 
-	objLayer := newObjectLayerWithoutSafeModeFn()
+	objLayer := newObjectLayerFn()
 
 	// Service not initialized yet
 	if objLayer == nil {
