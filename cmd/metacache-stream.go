@@ -522,7 +522,7 @@ func (r *metacacheReader) readN(n int, inclDeleted bool, prefix string) (metaCac
 }
 
 // readAll will return all remaining objects on the dst channel and close it when done.
-// The context allows the operation to be cancelled.
+// The context allows the operation to be canceled.
 func (r *metacacheReader) readAll(ctx context.Context, dst chan<- metaCacheEntry) error {
 	r.checkInit()
 	if r.err != nil {

@@ -1151,36 +1151,6 @@ func isTruncatedZones(zoneEntryChs [][]FileInfoCh, zoneEntries [][]FileInfo, zon
 	return isTruncated
 }
 
-func isTruncatedZonesVersions(zoneEntryChs [][]FileInfoVersionsCh, zoneEntries [][]FileInfoVersions, zoneEntriesValid [][]bool) bool {
-	for i, entryChs := range zoneEntryChs {
-		for j := range entryChs {
-			zoneEntries[i][j], zoneEntriesValid[i][j] = entryChs[j].Pop()
-		}
-	}
-
-	var isTruncated = false
-	for _, entriesValid := range zoneEntriesValid {
-		for _, valid := range entriesValid {
-			if !valid {
-				continue
-			}
-			isTruncated = true
-			break
-		}
-		if isTruncated {
-			break
-		}
-	}
-	for i, entryChs := range zoneEntryChs {
-		for j := range entryChs {
-			if zoneEntriesValid[i][j] {
-				zoneEntryChs[i][j].Push(zoneEntries[i][j])
-			}
-		}
-	}
-	return isTruncated
-}
-
 func (z *erasureZones) ListObjectVersions(ctx context.Context, bucket, prefix, marker, versionMarker, delimiter string, maxKeys int) (ListObjectVersionsInfo, error) {
 	loi := ListObjectVersionsInfo{}
 	if marker == "" && versionMarker != "" {

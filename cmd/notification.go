@@ -586,7 +586,6 @@ func (sys *NotificationSys) findEarliestCleanBloomFilter(ctx context.Context, di
 	best := intDataUpdateTracker.latestWithDir(dir)
 	if best == current {
 		// If the current is dirty no need to check others.
-		fmt.Println("latest contains dir")
 		return current
 	}
 
@@ -615,11 +614,9 @@ func (sys *NotificationSys) findEarliestCleanBloomFilter(ctx context.Context, di
 				best = current
 				logger.LogIf(ctx, err)
 				return nil
-			} else {
-				fmt.Println("server returned bloom", serverBF.OldestIdx, "current:", current)
-				if serverBF.OldestIdx > best {
-					best = serverBF.OldestIdx
-				}
+			}
+			if serverBF.OldestIdx > best {
+				best = serverBF.OldestIdx
 			}
 			return nil
 		}, idx)

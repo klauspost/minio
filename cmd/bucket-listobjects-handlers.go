@@ -263,18 +263,6 @@ func (api objectAPIHandlers) ListObjectsV2Handler(w http.ResponseWriter, r *http
 	writeSuccessResponseXML(w, encodeResponse(response))
 }
 
-func getLocalNodeIndex() int {
-	if len(globalProxyEndpoints) == 0 {
-		return -1
-	}
-	for i, ep := range globalProxyEndpoints {
-		if ep.IsLocal {
-			return i
-		}
-	}
-	return -1
-}
-
 func parseRequestToken(token string) (subToken string, nodeIndex int) {
 	if token == "" {
 		return token, -1

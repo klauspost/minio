@@ -21,7 +21,6 @@ import (
 	"context"
 	"encoding/gob"
 	"errors"
-	"fmt"
 	"io"
 	"path"
 	"strings"
@@ -128,7 +127,6 @@ func (m *metacache) canBeReplacedBy(other *metacache) bool {
 		return strings.HasPrefix(m.root, other.root)
 	}
 	panic("should be unreachable")
-	return true
 }
 
 type bucketMetacache struct {
@@ -175,8 +173,6 @@ func loadBucketMetaCache(ctx context.Context, bucket string) (*bucketMetacache, 
 	err := objAPI.GetObject(ctx, minioMetaBucket, pathJoin("buckets", bucket, ".metacache", "index.s2"), 0, -1, w, "", ObjectOptions{})
 	logger.LogIf(ctx, w.CloseWithError(err))
 	if err != nil {
-		fmt.Println("Cache for bucket", bucket, "load err:", err)
-
 		if isErrObjectNotFound(err) {
 			err = nil
 		} else {
@@ -185,7 +181,6 @@ func loadBucketMetaCache(ctx context.Context, bucket string) (*bucketMetacache, 
 		return newBucketMetacache(bucket), err
 	}
 	wg.Wait()
-	fmt.Println("loaded cache with ", len(meta.caches), "caches")
 	if decErr != nil {
 		logger.LogIf(ctx, decErr)
 		return newBucketMetacache(bucket), err
@@ -246,7 +241,7 @@ func (b *bucketMetacache) findCache(o listPathOptions) metacache {
 	}
 
 	debugPrint := func(msg string, data ...interface{}) {}
-	if true {
+	if false {
 		debugPrint = logger.Info
 	}
 
@@ -340,18 +335,23 @@ func (b *bucketMetacache) cleanup() {
 	remove := make(map[string]struct{})
 	currentCycle := intDataUpdateTracker.current()
 
+	debugPrint := func(msg string, data ...interface{}) {}
+	if false {
+		debugPrint = logger.Info
+	}
+
 	b.mu.RLock()
 	for id, cache := range b.caches {
 		if !cache.worthKeeping(currentCycle) {
-			fmt.Println("cache", id, "not worth keeping")
+			debugPrint("cache %s not worth keeping", id)
 			remove[id] = struct{}{}
 		}
 		if cache.id != id {
-			fmt.Println("cache ID mismatch", id, cache.id)
+			logger.Info("cache ID mismatch %s != %s", id, cache.id)
 			remove[id] = struct{}{}
 		}
 		if cache.bucket != b.bucket {
-			fmt.Println("cache bucket mismatch", b.bucket, cache.bucket)
+			logger.Info("cache bucket mismatch %s != %s", b.bucket, cache.bucket)
 			remove[id] = struct{}{}
 		}
 	}
@@ -364,11 +364,11 @@ func (b *bucketMetacache) cleanup() {
 		}
 		for _, cache2 := range b.caches {
 			if cache.canBeReplacedBy(&cache2) {
-				fmt.Println("cache", id, "can be replaced by", cache2.id)
+				debugPrint("cache %s can be replaced by %s", id, cache2.id)
 				remove[id] = struct{}{}
 				break
 			} else {
-				fmt.Println("cache", id, "can NOT be replaced by", cache2.id)
+				debugPrint("cache %s can be NOT replaced by %s", id, cache2.id)
 			}
 		}
 	}
@@ -405,7 +405,7 @@ func (b *bucketMetacache) updateCacheEntry(update metacache) (metacache, error) 
 	if !ok {
 		return update, errFileNotFound
 	}
-	fmt.Println("got update", update)
+
 	existing.lastUpdate = UTCNow()
 	if existing.status == scanStateStarted && update.status != scanStateStarted {
 		existing.status = update.status
@@ -435,7 +435,6 @@ func (b *bucketMetacache) getCache(id string) *metacache {
 }
 
 func (b *bucketMetacache) deleteCache(id string) {
-	fmt.Println("deleting cache", id)
 	b.mu.Lock()
 	c, ok := b.caches[id]
 	if ok {
