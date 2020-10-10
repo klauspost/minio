@@ -17,8 +17,11 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"strings"
+
+	"github.com/minio/minio/cmd/logger"
 )
 
 // markerTagVersion is the marker version.
@@ -55,10 +58,13 @@ func parseMarker(s string) (marker, uuid string) {
 }
 
 // encodeMarker will encode a uuid and return it as a marker.
-// uuid cannot contain ':' or ','.
+// uuid cannot contain '[', ':' or ','.
 func encodeMarker(marker, uuid string) string {
 	if uuid == "" {
 		return marker
+	}
+	if strings.ContainsAny(uuid, "[:,") {
+		logger.LogIf(context.Background(), fmt.Errorf("encodeMarker: uuid %s contained invalid characters", uuid))
 	}
 	return fmt.Sprintf("%s[minio_cache:%s,id:%s]", marker, markerTagVersion, uuid)
 }

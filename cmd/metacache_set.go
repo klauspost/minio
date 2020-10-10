@@ -141,14 +141,18 @@ func (o *listPathOptions) findFirstPart(fi FileInfo) (int, error) {
 	if search == "" {
 		return 0, nil
 	}
-	fmt.Println("searching for ", search)
+	debugPrintln := func(a ...interface{}) (n int, err error) { return 0, nil }
+	if false {
+		debugPrintln = fmt.Println
+	}
+	debugPrintln("searching for ", search)
 	var tmp metacacheBlock
 	i := 0
 	for {
 		partKey := fmt.Sprintf("%s-metacache-part-%d", ReservedMetadataPrefixLower, i)
 		v, ok := fi.Metadata[partKey]
 		if !ok {
-			fmt.Println("no match in metadata, waiting")
+			debugPrintln("no match in metadata, waiting")
 			return -1, io.ErrUnexpectedEOF
 		}
 		err := json.Unmarshal([]byte(v), &tmp)
@@ -157,21 +161,20 @@ func (o *listPathOptions) findFirstPart(fi FileInfo) (int, error) {
 			return -1, err
 		}
 		if tmp.First >= search {
-			fmt.Println("First >= search", v)
+			debugPrintln("First >= search", v)
 			return i, nil
 		}
 		if tmp.Last >= search {
-			fmt.Println("Last >= search", v)
+			debugPrintln("Last >= search", v)
 			return i, nil
 		}
 		if tmp.EOS {
-			fmt.Println("no match, at EOS", v)
+			debugPrintln("no match, at EOS", v)
 			return -3, io.EOF
 		}
-		//fmt.Println("First ", tmp.First, "<", search, " search", i)
+		debugPrintln("First ", tmp.First, "<", search, " search", i)
 		i++
 	}
-	return -2, io.ErrUnexpectedEOF
 }
 
 // newMetacache constructs a new metacache from the options.
@@ -227,7 +230,7 @@ func (r *metacacheReader) filter(o listPathOptions) (entries metaCacheEntriesSor
 			return entries, err
 		}
 	}
-	fmt.Println("forwarded to ", o.Prefix, "marker:", o.Marker, "sep:", o.Separator)
+	// fmt.Println("forwarded to ", o.Prefix, "marker:", o.Marker, "sep:", o.Separator)
 	// Filter
 	if !o.Recursive {
 		entries.o = make(metaCacheEntries, 0, o.Limit)
@@ -247,7 +250,6 @@ func (r *metacacheReader) filter(o listPathOptions) (entries metaCacheEntriesSor
 			return entries.len() < o.Limit
 		})
 		if err == io.EOF || pastPrefix {
-			fmt.Println("returning EOF")
 			return entries, io.EOF
 		}
 		return entries, err
@@ -258,7 +260,6 @@ func (r *metacacheReader) filter(o listPathOptions) (entries metaCacheEntriesSor
 }
 
 func (er erasureObjects) streamMetadataParts(ctx context.Context, o listPathOptions) (entries metaCacheEntriesSorted, err error) {
-	partN := -1
 	for {
 		select {
 		case <-ctx.Done():
@@ -271,43 +272,49 @@ func (er erasureObjects) streamMetadataParts(ctx context.Context, o listPathOpti
 		if err != nil {
 			if err == errFileNotFound {
 				// Not ready yet...
-				// It would probably be reasonable to check the cache status.
+				// TODO: It would probably be reasonable to check the cache status.
 				time.Sleep(100 * time.Millisecond)
 				continue
 			}
 
-			fmt.Println("first getObjectFileInfo", o.objectPath(0), "returned err:", err)
+			//fmt.Println("first getObjectFileInfo", o.objectPath(0), "returned err:", err)
 			return entries, err
 		}
 		if fi.Deleted {
-			fmt.Println(o.objectPath(0), "deleted")
 			return entries, errFileNotFound
 		}
 
-		partN, err = o.findFirstPart(fi)
+		partN, err := o.findFirstPart(fi)
 		switch err {
 		case nil:
 		case io.ErrUnexpectedEOF:
+			// TODO: It would probably be reasonable to check the cache status.
 			time.Sleep(100 * time.Millisecond)
 			continue
 		case io.EOF:
-			fmt.Println("findFirstPart EOF", fi.Metadata)
 			return entries, io.EOF
 		}
 		// We got a stream to start at.
 		loadedPart := 0
 		var buf bytes.Buffer
 		for {
+			select {
+			case <-ctx.Done():
+				return entries, ctx.Err()
+			default:
+			}
+
 			if partN != loadedPart {
 				// Load first part metadata...
 				fi, metaArr, onlineDisks, err = er.getObjectFileInfo(ctx, minioMetaBucket, o.objectPath(partN), ObjectOptions{})
 				switch err {
 				case errFileNotFound:
 					// Not ready yet...
+					// Maybe check status after a second.
 					time.Sleep(100 * time.Millisecond)
 					continue
 				default:
-					fmt.Println("getObjectFileInfo err", o.objectPath(partN), fi.Metadata, err)
+					logger.LogIf(ctx, err)
 					return entries, err
 				case nil:
 					loadedPart = partN
@@ -327,7 +334,7 @@ func (er erasureObjects) streamMetadataParts(ctx context.Context, o listPathOpti
 			buf.Reset()
 			err := er.getObjectWithFileInfo(ctx, minioMetaBucket, o.objectPath(partN), 0, fi.Size, &buf, fi, metaArr, onlineDisks)
 			if err != nil {
-				fmt.Println("getObjectWithFileInfo err", o.objectPath(partN), fi.Metadata, err)
+				logger.LogIf(ctx, err)
 				return entries, err
 			}
 			tmp, err := newMetacacheReader(&buf)
@@ -355,7 +362,6 @@ func (er erasureObjects) streamMetadataParts(ctx context.Context, o listPathOpti
 					return entries, io.EOF
 				}
 				partN++
-				fmt.Println("moving on to part", partN)
 			case nil:
 				// We stopped within the listing, we are done for now...
 				return entries, nil
@@ -369,7 +375,7 @@ func (er erasureObjects) streamMetadataParts(ctx context.Context, o listPathOpti
 // Will return io.EOF if continuing would not yield more results.
 func (er erasureObjects) listPath(ctx context.Context, o listPathOptions) (entries metaCacheEntriesSorted, err error) {
 	startTime := time.Now()
-	fmt.Println("set listing bucket:", o.Bucket, "basedir:", o.BaseDir, "prefix:", o.Prefix)
+	//fmt.Println("set listing bucket:", o.Bucket, "basedir:", o.BaseDir, "prefix:", o.Prefix)
 	// See if we have the listing stored.
 	if !o.Create {
 		entries, err := er.streamMetadataParts(ctx, o)
@@ -395,6 +401,7 @@ func (er erasureObjects) listPath(ctx context.Context, o listPathOptions) (entri
 	const askDisks = 3
 	if len(disks) < askDisks {
 		err = InsufficientReadQuorum{}
+		cancel()
 		return
 	}
 
@@ -408,6 +415,7 @@ func (er erasureObjects) listPath(ctx context.Context, o listPathOptions) (entri
 		d := disks[i]
 		readers[i], err = newMetacacheReader(r)
 		if err != nil {
+			cancel()
 			return entries, err
 		}
 		// Send request.
@@ -433,7 +441,7 @@ func (er erasureObjects) listPath(ctx context.Context, o listPathOptions) (entri
 		defer cancel()
 		meta := o.newMetacache()
 		var metaMu sync.Mutex
-		// Save continous updates
+		// Save continuous updates
 		go func() {
 			client := globalNotificationSys.restClientFromHash(o.Bucket)
 			ticker := time.NewTicker(10 * time.Second)
@@ -465,7 +473,7 @@ func (er erasureObjects) listPath(ctx context.Context, o listPathOptions) (entri
 
 		// Write results to disk.
 		bw := newMetacacheBlockWriter(cacheCh, func(b *metacacheBlock) error {
-			fmt.Println("SAVING BLOCK", b.n, "to", o.objectPath(b.n))
+			//fmt.Println("SAVING BLOCK", b.n, "to", o.objectPath(b.n))
 			r, err := hash.NewReader(bytes.NewBuffer(b.data), int64(len(b.data)), "", "", int64(len(b.data)), false)
 			logger.LogIf(ctx, err)
 			custom := b.headerKV()
@@ -546,7 +554,6 @@ func (er erasureObjects) listPath(ctx context.Context, o listPathOptions) (entri
 			}
 			// Break if all at EOF.
 			if atEOF == len(readers) {
-				fmt.Println("at EOF")
 				break
 			}
 			if agree == len(readers) {

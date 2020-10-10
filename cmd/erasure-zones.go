@@ -1076,38 +1076,6 @@ func lexicallySortedEntryZoneVersions(zoneEntryChs [][]FileInfoVersionsCh, zoneE
 	return lentry, lexicallySortedEntryCount, zoneIndex, isTruncated
 }
 
-// mergeZonesEntriesVersionsCh - merges FileInfoVersions channel to entries upto maxKeys.
-func mergeZonesEntriesVersionsCh(zonesEntryChs [][]FileInfoVersionsCh, maxKeys int, zonesListTolerancePerSet []int) (entries FilesInfoVersions) {
-	var i = 0
-	zonesEntriesInfos := make([][]FileInfoVersions, 0, len(zonesEntryChs))
-	zonesEntriesValid := make([][]bool, 0, len(zonesEntryChs))
-	for _, entryChs := range zonesEntryChs {
-		zonesEntriesInfos = append(zonesEntriesInfos, make([]FileInfoVersions, len(entryChs)))
-		zonesEntriesValid = append(zonesEntriesValid, make([]bool, len(entryChs)))
-	}
-
-	for {
-		fi, quorumCount, zoneIndex, ok := lexicallySortedEntryZoneVersions(zonesEntryChs, zonesEntriesInfos, zonesEntriesValid)
-		if !ok {
-			// We have reached EOF across all entryChs, break the loop.
-			break
-		}
-
-		if quorumCount < zonesListTolerancePerSet[zoneIndex] {
-			// Skip entries which are not found upto the expected tolerance
-			continue
-		}
-
-		entries.FilesVersions = append(entries.FilesVersions, fi)
-		i++
-		if i == maxKeys {
-			entries.IsTruncated = isTruncatedZonesVersions(zonesEntryChs, zonesEntriesInfos, zonesEntriesValid)
-			break
-		}
-	}
-	return entries
-}
-
 // mergeZonesEntriesCh - merges FileInfo channel to entries upto maxKeys.
 func mergeZonesEntriesCh(zonesEntryChs [][]FileInfoCh, maxKeys int, zonesListTolerancePerSet []int) (entries FilesInfo) {
 	var i = 0

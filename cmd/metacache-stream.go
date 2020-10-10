@@ -512,10 +512,9 @@ func (r *metacacheReader) readN(n int, inclDeleted bool, prefix string) (metaCac
 			}
 			r.err = err
 			return metaCacheEntriesSorted{o: res}, err
-		} else {
-			if !inclDeleted && meta.isLatestDeletemarker() {
-				continue
-			}
+		}
+		if !inclDeleted && meta.isLatestDeletemarker() {
+			continue
 		}
 		res = append(res, meta)
 	}
@@ -737,7 +736,6 @@ func (r *metacacheReader) Close() error {
 type metacacheBlockWriter struct {
 	wg           sync.WaitGroup
 	streamErr    error
-	blocks       int
 	blockEntries int
 }
 
@@ -787,7 +785,7 @@ func newMetacacheBlockWriter(in <-chan metaCacheEntry, nextBlock func(b *metacac
 			}
 			current.Last = o.name
 		}
-		fmt.Println("stream writer exited input", n, "streamErr:", w.streamErr)
+		// fmt.Println("stream writer exited input", n, "streamErr:", w.streamErr)
 		if n > 0 {
 			current.EOS = true
 			finishBlock()

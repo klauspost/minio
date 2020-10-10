@@ -154,14 +154,11 @@ func (m metaCacheEntries) isSorted() bool {
 // but object metadata will not be cloned.
 func (m metaCacheEntries) shallowClone() metaCacheEntries {
 	dst := make(metaCacheEntries, len(m))
-	for i, obj := range m {
-		dst[i] = obj
-	}
+	copy(dst, m)
 	return dst
 }
 
 type metadataResolutionParams struct {
-	er        erasureObjects
 	startTime time.Time
 	dirQuorum int
 	bucket    string

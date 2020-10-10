@@ -18,7 +18,6 @@ package cmd
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
@@ -48,7 +47,6 @@ func (m *metacacheManager) initManager() {
 			time.Sleep(time.Second)
 			objAPI = newObjectLayerFn()
 		}
-		fmt.Println("init cleanup")
 
 		t := time.NewTicker(time.Minute)
 		var exit bool
@@ -59,7 +57,6 @@ func (m *metacacheManager) initManager() {
 			case <-GlobalContext.Done():
 				exit = true
 			}
-			fmt.Println("starting cleanup")
 			m.mu.RLock()
 			for _, v := range m.buckets {
 				if !exit {

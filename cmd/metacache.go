@@ -127,7 +127,7 @@ func (m *metacache) canBeReplacedBy(other *metacache) bool {
 		// Similar if both are recursive
 		return strings.HasPrefix(m.root, other.root)
 	}
-	fmt.Println("unreachable")
+	panic("should be unreachable")
 	return true
 }
 
