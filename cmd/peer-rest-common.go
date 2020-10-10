@@ -57,12 +57,14 @@ const (
 	peerRESTMethodListen                 = "/listen"
 	peerRESTMethodLog                    = "/log"
 	peerRESTMethodGetLocalDiskIDs        = "/getlocaldiskids"
+	peerRESTMethodGetBandwidth           = "/bandwidth"
 	peerRESTMethodGetMetacacheListing    = "/getmetacache"
 	peerRESTMethodUpdateMetacacheListing = "/updatemetacache"
 )
 
 const (
 	peerRESTBucket      = "bucket"
+	peerRESTBuckets     = "buckets"
 	peerRESTUser        = "user"
 	peerRESTGroup       = "group"
 	peerRESTUserTemp    = "user-temp"

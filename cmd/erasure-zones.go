@@ -715,7 +715,11 @@ func (z *erasureZones) listObjectsNonSlash(ctx context.Context, bucket, prefix, 
 	for _, zone := range z.zones {
 		zonesEntryChs = append(zonesEntryChs,
 			zone.startMergeWalksN(ctx, bucket, prefix, "", true, endWalkCh, zone.listTolerancePerSet, false))
-		zonesListTolerancePerSet = append(zonesListTolerancePerSet, zone.listTolerancePerSet-2)
+		if zone.listTolerancePerSet == -1 {
+			zonesListTolerancePerSet = append(zonesListTolerancePerSet, zone.setDriveCount/2)
+		} else {
+			zonesListTolerancePerSet = append(zonesListTolerancePerSet, zone.listTolerancePerSet-2)
+		}
 	}
 
 	var objInfos []ObjectInfo
@@ -741,7 +745,7 @@ func (z *erasureZones) listObjectsNonSlash(ctx context.Context, bucket, prefix, 
 		}
 
 		if quorumCount < zonesListTolerancePerSet[zoneIndex] {
-			// Skip entries which are not found on upto ndisks/2.
+			// Skip entries which are not found on upto expected tolerance
 			continue
 		}
 
@@ -859,7 +863,11 @@ func (z *erasureZones) listObjectsSplunk(ctx context.Context, bucket, prefix, ma
 		}
 		zonesEntryChs = append(zonesEntryChs, entryChs)
 		zonesEndWalkCh = append(zonesEndWalkCh, endWalkCh)
-		zonesListTolerancePerSet = append(zonesListTolerancePerSet, zone.listTolerancePerSet-2)
+		if zone.listTolerancePerSet == -1 {
+			zonesListTolerancePerSet = append(zonesListTolerancePerSet, zone.setDriveCount/2)
+		} else {
+			zonesListTolerancePerSet = append(zonesListTolerancePerSet, zone.listTolerancePerSet-2)
+		}
 	}
 
 	entries := mergeZonesEntriesCh(zonesEntryChs, maxKeys, zonesListTolerancePerSet)
@@ -1828,9 +1836,13 @@ func (z *erasureZones) Walk(ctx context.Context, bucket, prefix string, results 
 		return err
 	}
 
-	var zoneDrivesPerSet []int
+	zonesListTolerancePerSet := make([]int, 0, len(z.zones))
 	for _, zone := range z.zones {
-		zoneDrivesPerSet = append(zoneDrivesPerSet, zone.listTolerancePerSet-2)
+		if zone.listTolerancePerSet == -1 {
+			zonesListTolerancePerSet = append(zonesListTolerancePerSet, zone.setDriveCount/2)
+		} else {
+			zonesListTolerancePerSet = append(zonesListTolerancePerSet, zone.listTolerancePerSet-2)
+		}
 	}
 
 	if opts.WalkVersions {
@@ -1850,13 +1862,13 @@ func (z *erasureZones) Walk(ctx context.Context, bucket, prefix string, results 
 			defer close(results)
 
 			for {
-				entry, quorumCount, _, ok := lexicallySortedEntryZoneVersions(zonesEntryChs, zonesEntriesInfos, zonesEntriesValid)
+				entry, quorumCount, zoneIdx, ok := lexicallySortedEntryZoneVersions(zonesEntryChs, zonesEntriesInfos, zonesEntriesValid)
 				if !ok {
 					// We have reached EOF across all entryChs, break the loop.
 					return
 				}
 
-				if quorumCount > 0 {
+				if quorumCount >= zonesListTolerancePerSet[zoneIdx] {
 					for _, version := range entry.Versions {
 						results <- version.ToObjectInfo(bucket, version.Name)
 					}
@@ -1883,13 +1895,13 @@ func (z *erasureZones) Walk(ctx context.Context, bucket, prefix string, results 
 		defer close(results)
 
 		for {
-			entry, quorumCount, _, ok := lexicallySortedEntryZone(zonesEntryChs, zonesEntriesInfos, zonesEntriesValid)
+			entry, quorumCount, zoneIdx, ok := lexicallySortedEntryZone(zonesEntryChs, zonesEntriesInfos, zonesEntriesValid)
 			if !ok {
 				// We have reached EOF across all entryChs, break the loop.
 				return
 			}
 
-			if quorumCount > 0 {
+			if quorumCount >= zonesListTolerancePerSet[zoneIdx] {
 				results <- entry.ToObjectInfo(bucket, entry.Name)
 			}
 		}

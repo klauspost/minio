@@ -391,7 +391,7 @@ func (er erasureObjects) listPath(ctx context.Context, o listPathOptions) (entri
 	ctx, cancel := context.WithCancel(GlobalContext)
 	// We need to ask disks.
 	var disks []StorageAPI
-	for _, d := range er.getLoadBalancedDisks() {
+	for _, d := range er.getLoadBalancedDisks(true) {
 		if d == nil || !d.IsOnline() {
 			continue
 		}
