@@ -419,8 +419,7 @@ func (er erasureObjects) listPath(ctx context.Context, o listPathOptions) (entri
 	}
 
 	// Create output for our results.
-	const blockSize = 5000
-	cacheCh := make(chan metaCacheEntry, blockSize)
+	cacheCh := make(chan metaCacheEntry, metacacheBlockSize)
 
 	// Create filter for results.
 	filterCh := make(chan metaCacheEntry, 100)

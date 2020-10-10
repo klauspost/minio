@@ -44,6 +44,9 @@ const (
 
 	// Time in which the initiator of a scan must have reported back.
 	metacacheMaxRunningAge = time.Minute
+
+	// metacacheBlockSize is the number of file/directory entries to have in each block.
+	metacacheBlockSize = 5000
 )
 
 //go:generate msgp -file $GOFILE -unexported
@@ -233,6 +236,10 @@ func (b *bucketMetacache) save(ctx context.Context) error {
 // If a cache with the same ID exists already it will be returned.
 // If none can be found a new is created with the provided ID.
 func (b *bucketMetacache) findCache(o listPathOptions) metacache {
+	if b == nil {
+		logger.Info("bucketMetacache.findCache: nil cache for bucket", o.Bucket)
+		return metacache{}
+	}
 	if o.Bucket != b.bucket {
 		logger.Info("bucketMetacache.findCache: bucket does not match", o.Bucket, b.bucket)
 		return metacache{}

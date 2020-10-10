@@ -18,7 +18,6 @@ package cmd
 
 import (
 	"bytes"
-	"errors"
 	"io"
 	"os"
 	"sort"
@@ -88,9 +87,14 @@ func (e *metaCacheEntry) isLatestDeletemarker() bool {
 
 // fileInfo returns the decoded metadata.
 // If versioned the latest version will be returned.
-func (e *metaCacheEntry) fileInfo(bucket string) (*FileInfo, error) {
-	if len(e.metadata) == 0 {
-		return nil, errors.New("metaCacheEntry: directories does not contain metadata")
+func (e *metaCacheEntry) fileInfo(bucket, delimiter string) (*FileInfo, error) {
+	// TODO: Handle delimiter...
+	if e.isDir() {
+		return &FileInfo{
+			Volume: bucket,
+			Name:   e.name,
+			Mode:   os.ModeDir,
+		}, nil
 	}
 	if e.cached == nil {
 		fi, err := getFileInfo(e.metadata, bucket, e.name, "")
@@ -103,7 +107,8 @@ func (e *metaCacheEntry) fileInfo(bucket string) (*FileInfo, error) {
 }
 
 // fileInfoVersions returns the metadata as FileInfoVersions.
-func (e *metaCacheEntry) fileInfoVersions(bucket string) (FileInfoVersions, error) {
+func (e *metaCacheEntry) fileInfoVersions(bucket, delimiter string) (FileInfoVersions, error) {
+	// TODO: Handle delimiter...
 	if e.isDir() {
 		return FileInfoVersions{
 			Volume: bucket,
@@ -181,7 +186,7 @@ func (m metaCacheEntries) resolve(r *metadataResolutionParams) (selected *metaCa
 		}
 
 		// Get new entry metadata
-		fiv, err := entry.fileInfo(r.bucket)
+		fiv, err := entry.fileInfo(r.bucket, slashSeparator)
 		if err != nil {
 			continue
 		}
@@ -219,6 +224,8 @@ func (m metaCacheEntries) names() []string {
 // metaCacheEntriesSorted contains metacache entries that are sorted.
 type metaCacheEntriesSorted struct {
 	o metaCacheEntries
+	// list id is not serialized
+	listID string
 }
 
 // writeTo will write all objects to the provided output.
@@ -252,10 +259,10 @@ func (m *metaCacheEntriesSorted) iterate(fn func(entry metaCacheEntry) (cont boo
 
 // fileInfoVersions converts the metadata to FileInfoVersions where possible.
 // Metadata that cannot be decoded is skipped.
-func (m *metaCacheEntriesSorted) fileInfoVersions(bucket string) []FileInfoVersions {
+func (m *metaCacheEntriesSorted) fileInfoVersions(bucket, delimiter string) []FileInfoVersions {
 	dst := make([]FileInfoVersions, 0, m.len())
 	for _, entry := range m.o {
-		fiv, err := entry.fileInfoVersions(bucket)
+		fiv, err := entry.fileInfoVersions(bucket, delimiter)
 		if err != nil {
 			continue
 		}
@@ -266,10 +273,10 @@ func (m *metaCacheEntriesSorted) fileInfoVersions(bucket string) []FileInfoVersi
 
 // fileInfoVersions converts the metadata to FileInfoVersions where possible.
 // Metadata that cannot be decoded is skipped.
-func (m *metaCacheEntriesSorted) fileInfos(bucket string) []FileInfo {
+func (m *metaCacheEntriesSorted) fileInfos(bucket, delimiter string) []FileInfo {
 	dst := make([]FileInfo, 0, m.len())
 	for _, entry := range m.o {
-		fi, err := entry.fileInfo(bucket)
+		fi, err := entry.fileInfo(bucket, delimiter)
 		if err != nil {
 			continue
 		}

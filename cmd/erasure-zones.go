@@ -674,6 +674,37 @@ func (z *erasureZones) ListObjectsV2(ctx context.Context, bucket, prefix, contin
 }
 
 func (z *erasureZones) listObjectsNonSlash(ctx context.Context, bucket, prefix, marker, delimiter string, maxKeys int) (loi ListObjectsInfo, err error) {
+	// Should be removed.
+	if err := checkListObjsArgs(ctx, bucket, prefix, marker, z); err != nil {
+		return loi, err
+	}
+
+	// Marker is set validate pre-condition.
+	if marker != "" {
+		// Marker not common with prefix is not implemented. Send an empty response
+		if !HasPrefix(marker, prefix) {
+			return loi, nil
+		}
+	}
+
+	// With max keys of zero we have reached eof, return right here.
+	if maxKeys == 0 {
+		return loi, nil
+	}
+
+	// For delimiter and prefix as '/' we do not list anything at all
+	// since according to s3 spec we stop at the 'delimiter'
+	// along // with the prefix. On a flat namespace with 'prefix'
+	// as '/' we don't have any entries, since all the keys are
+	// of form 'keyName/...'
+	if delimiter == SlashSeparator && prefix == SlashSeparator {
+		return loi, nil
+	}
+
+	// Over flowing count - reset to maxObjectList.
+	if maxKeys < 0 || maxKeys > maxObjectList {
+		maxKeys = maxObjectList
+	}
 
 	zonesEntryChs := make([][]FileInfoCh, 0, len(z.zones))
 	zonesListTolerancePerSet := make([]int, 0, len(z.zones))
@@ -787,6 +818,28 @@ func (z *erasureZones) listObjectsNonSlash(ctx context.Context, bucket, prefix, 
 }
 
 func (z *erasureZones) listObjectsSplunk(ctx context.Context, bucket, prefix, marker string, maxKeys int) (loi ListObjectsInfo, err error) {
+	if err := checkListObjsArgs(ctx, bucket, prefix, marker, z); err != nil {
+		return loi, err
+	}
+
+	// Marker is set validate pre-condition.
+	if marker != "" {
+		// Marker not common with prefix is not implemented. Send an empty response
+		if !HasPrefix(marker, prefix) {
+			return loi, nil
+		}
+	}
+
+	// With max keys of zero we have reached eof, return right here.
+	if maxKeys == 0 {
+		return loi, nil
+	}
+
+	// Over flowing count - reset to maxObjectList.
+	if maxKeys < 0 || maxKeys > maxObjectList {
+		maxKeys = maxObjectList
+	}
+
 	if strings.Contains(prefix, guidSplunk) {
 		logger.LogIf(ctx, NotImplemented{})
 		return loi, NotImplemented{}
@@ -833,95 +886,6 @@ func (z *erasureZones) listObjectsSplunk(ctx context.Context, bucket, prefix, ma
 	if loi.IsTruncated {
 		for i, zone := range z.zones {
 			zone.poolSplunk.Set(listParams{bucket, recursive, loi.NextMarker, prefix}, zonesEntryChs[i],
-				zonesEndWalkCh[i])
-		}
-	}
-	return loi, nil
-}
-
-func (z *erasureZones) listObjects(ctx context.Context, bucket, prefix, marker, delimiter string, maxKeys int) (ListObjectsInfo, error) {
-	loi := ListObjectsInfo{}
-
-	if err := checkListObjsArgs(ctx, bucket, prefix, marker, z); err != nil {
-		return loi, err
-	}
-
-	// Marker is set validate pre-condition.
-	if marker != "" {
-		// Marker not common with prefix is not implemented. Send an empty response
-		if !HasPrefix(marker, prefix) {
-			return loi, nil
-		}
-	}
-
-	// With max keys of zero we have reached eof, return right here.
-	if maxKeys == 0 {
-		return loi, nil
-	}
-
-	// For delimiter and prefix as '/' we do not list anything at all
-	// since according to s3 spec we stop at the 'delimiter'
-	// along // with the prefix. On a flat namespace with 'prefix'
-	// as '/' we don't have any entries, since all the keys are
-	// of form 'keyName/...'
-	if delimiter == SlashSeparator && prefix == SlashSeparator {
-		return loi, nil
-	}
-
-	// Over flowing count - reset to maxObjectList.
-	if maxKeys < 0 || maxKeys > maxObjectList {
-		maxKeys = maxObjectList
-	}
-
-	if delimiter != SlashSeparator && delimiter != "" {
-		if delimiter == guidSplunk {
-			return z.listObjectsSplunk(ctx, bucket, prefix, marker, maxKeys)
-		}
-		return z.listObjectsNonSlash(ctx, bucket, prefix, marker, delimiter, maxKeys)
-	}
-
-	// Default is recursive, if delimiter is set then list non recursive.
-	recursive := true
-	if delimiter == SlashSeparator {
-		recursive = false
-	}
-
-	zonesEntryChs := make([][]FileInfoCh, 0, len(z.zones))
-	zonesEndWalkCh := make([]chan struct{}, 0, len(z.zones))
-	zonesListTolerancePerSet := make([]int, 0, len(z.zones))
-
-	for _, zone := range z.zones {
-		entryChs, endWalkCh := zone.pool.Release(listParams{bucket, recursive, marker, prefix})
-		if entryChs == nil {
-			endWalkCh = make(chan struct{})
-			entryChs = zone.startMergeWalksN(ctx, bucket, prefix, marker, recursive, endWalkCh, zone.listTolerancePerSet, false)
-		}
-		zonesEntryChs = append(zonesEntryChs, entryChs)
-		zonesEndWalkCh = append(zonesEndWalkCh, endWalkCh)
-		zonesListTolerancePerSet = append(zonesListTolerancePerSet, zone.listTolerancePerSet-2)
-	}
-
-	entries := mergeZonesEntriesCh(zonesEntryChs, maxKeys, zonesListTolerancePerSet)
-	if len(entries.Files) == 0 {
-		return loi, nil
-	}
-
-	loi.IsTruncated = entries.IsTruncated
-	if loi.IsTruncated {
-		loi.NextMarker = entries.Files[len(entries.Files)-1].Name
-	}
-
-	for _, entry := range entries.Files {
-		objInfo := entry.ToObjectInfo(entry.Volume, entry.Name)
-		if HasSuffix(objInfo.Name, SlashSeparator) && !recursive {
-			loi.Prefixes = append(loi.Prefixes, objInfo.Name)
-			continue
-		}
-		loi.Objects = append(loi.Objects, objInfo)
-	}
-	if loi.IsTruncated {
-		for i, zone := range z.zones {
-			zone.pool.Set(listParams{bucket, recursive, loi.NextMarker, prefix}, zonesEntryChs[i],
 				zonesEndWalkCh[i])
 		}
 	}
@@ -1241,31 +1205,89 @@ func isTruncatedZonesVersions(zoneEntryChs [][]FileInfoVersionsCh, zoneEntries [
 	return isTruncated
 }
 
-func (z *erasureZones) listObjectVersions(ctx context.Context, bucket, prefix, marker, versionMarker, delimiter string, maxKeys int) (ListObjectVersionsInfo, error) {
+func (z *erasureZones) ListObjectVersions(ctx context.Context, bucket, prefix, marker, versionMarker, delimiter string, maxKeys int) (ListObjectVersionsInfo, error) {
 	loi := ListObjectVersionsInfo{}
-
-	if err := checkListObjsArgs(ctx, bucket, prefix, marker, z); err != nil {
+	if marker == "" && versionMarker != "" {
+		return loi, NotImplemented{}
+	}
+	merged, err := z.listPath(ctx, bucket, prefix, marker, delimiter, maxKeys)
+	if err != nil && err != io.EOF {
 		return loi, err
+	}
+	loi.IsTruncated = err == nil
+	recursive := delimiter != slashSeparator
+	entries := merged.fileInfoVersions(bucket, delimiter)
+
+	for _, entry := range entries {
+		for _, version := range entry.Versions {
+			objInfo := version.ToObjectInfo(bucket, entry.Name)
+			if HasSuffix(objInfo.Name, SlashSeparator) && !recursive {
+				loi.Prefixes = append(loi.Prefixes, objInfo.Name)
+				continue
+			}
+			loi.Objects = append(loi.Objects, objInfo)
+		}
+	}
+	loi.IsTruncated = loi.IsTruncated && len(loi.Objects) > 0
+	if loi.IsTruncated {
+		loi.NextMarker = encodeMarker(loi.Objects[len(loi.Objects)-1].Name, merged.listID)
+	}
+	return loi, nil
+}
+
+func (z *erasureZones) ListObjects(ctx context.Context, bucket, prefix, marker, delimiter string, maxKeys int) (ListObjectsInfo, error) {
+	var loi ListObjectsInfo
+	if delimiter != SlashSeparator && delimiter != "" {
+		// TODO: Remove these...
+		if delimiter == guidSplunk {
+			return z.listObjectsSplunk(ctx, bucket, prefix, marker, maxKeys)
+		}
+		return z.listObjectsNonSlash(ctx, bucket, prefix, marker, delimiter, maxKeys)
+	}
+
+	merged, err := z.listPath(ctx, bucket, prefix, marker, delimiter, maxKeys)
+	if err != nil && err != io.EOF {
+		return loi, err
+	}
+	// Default is recursive, if delimiter is set then list non recursive.
+	loi.IsTruncated = err == nil
+	recursive := delimiter != slashSeparator
+	entries := merged.fileInfos(bucket, delimiter)
+
+	for _, entry := range entries {
+		objInfo := entry.ToObjectInfo(bucket, entry.Name)
+		if HasSuffix(objInfo.Name, SlashSeparator) && !recursive {
+			loi.Prefixes = append(loi.Prefixes, objInfo.Name)
+			continue
+		}
+		loi.Objects = append(loi.Objects, objInfo)
+	}
+	loi.IsTruncated = loi.IsTruncated && len(loi.Objects) > 0
+	if loi.IsTruncated {
+		loi.NextMarker = encodeMarker(loi.Objects[len(loi.Objects)-1].Name, merged.listID)
+	}
+	return loi, nil
+}
+
+// listPath will return the requested entries.
+// If no more entries are in the listing io.EOF is returned, otherwise nil is returned.
+func (z *erasureZones) listPath(ctx context.Context, bucket, prefix, marker, delimiter string, maxKeys int) (entries metaCacheEntriesSorted, err error) {
+	if err := checkListObjsArgs(ctx, bucket, prefix, marker, z); err != nil {
+		return entries, err
 	}
 
 	// Marker is set validate pre-condition.
 	if marker != "" {
 		// Marker not common with prefix is not implemented. Send an empty response
 		if !HasPrefix(marker, prefix) {
-			return loi, nil
+			return entries, io.EOF
 		}
-	}
-
-	if marker == "" && versionMarker != "" {
-		return loi, NotImplemented{}
 	}
 
 	// With max keys of zero we have reached eof, return right here.
 	if maxKeys == 0 {
-		return loi, nil
+		return entries, io.EOF
 	}
-
-	// TODO : Move this generic code
 
 	// For delimiter and prefix as '/' we do not list anything at all
 	// since according to s3 spec we stop at the 'delimiter'
@@ -1273,7 +1295,7 @@ func (z *erasureZones) listObjectVersions(ctx context.Context, bucket, prefix, m
 	// as '/' we don't have any entries, since all the keys are
 	// of form 'keyName/...'
 	if delimiter == SlashSeparator && prefix == SlashSeparator {
-		return loi, nil
+		return entries, io.EOF
 	}
 
 	// Over flowing count - reset to maxObjectList.
@@ -1281,16 +1303,10 @@ func (z *erasureZones) listObjectVersions(ctx context.Context, bucket, prefix, m
 		maxKeys = maxObjectList
 	}
 
-	if delimiter != SlashSeparator && delimiter != "" {
-		// TODO: Could be lifted with some testing.
-		return loi, NotImplemented{}
-	}
-
 	// Default is recursive, if delimiter is set then list non recursive.
 	recursive := true
-	if delimiter == SlashSeparator {
-		recursive = false
-	} else if delimiter == "" {
+	if delimiter == slashSeparator || delimiter == "" {
+		recursive = delimiter != slashSeparator
 		delimiter = slashSeparator
 	}
 
@@ -1323,7 +1339,7 @@ func (z *erasureZones) listObjectVersions(ctx context.Context, bucket, prefix, m
 		} else {
 			c, err := rpc.GetMetacacheListing(ctx, opts)
 			if err != nil {
-				return loi, err
+				return entries, err
 			}
 			cache = *c
 		}
@@ -1332,7 +1348,6 @@ func (z *erasureZones) listObjectVersions(ctx context.Context, bucket, prefix, m
 		opts.ID = cache.id
 	}
 
-	var merged metaCacheEntriesSorted
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	var errs []error
@@ -1346,18 +1361,18 @@ func (z *erasureZones) listObjectVersions(ctx context.Context, bucket, prefix, m
 				mu.Lock()
 				defer mu.Unlock()
 				errs[i] = err
-				merged.merge(e, maxKeys+1)
+				entries.merge(e, maxKeys+1)
 
 				// Resolve non-trivial conflicts
-				merged.deduplicate(func(existing, other *metaCacheEntry) (replace bool) {
+				entries.deduplicate(func(existing, other *metaCacheEntry) (replace bool) {
 					if existing.isDir() {
 						return false
 					}
-					eFIV, err := existing.fileInfo(bucket)
+					eFIV, err := existing.fileInfo(bucket, delimiter)
 					if err != nil {
 						return true
 					}
-					oFIV, err := existing.fileInfo(bucket)
+					oFIV, err := existing.fileInfo(bucket, delimiter)
 					if err != nil {
 						return false
 					}
@@ -1378,37 +1393,15 @@ func (z *erasureZones) listObjectVersions(ctx context.Context, bucket, prefix, m
 		if err == io.EOF {
 			continue
 		}
-		return loi, err
+		return entries, err
 	}
-	loi.IsTruncated = merged.len() > maxKeys || !allAtEOF
-	merged.truncate(maxKeys)
-	entries := merged.fileInfoVersions(bucket)
-
-	for _, entry := range entries {
-		for _, version := range entry.Versions {
-			objInfo := version.ToObjectInfo(bucket, entry.Name)
-			if HasSuffix(objInfo.Name, SlashSeparator) && !recursive {
-				loi.Prefixes = append(loi.Prefixes, objInfo.Name)
-				continue
-			}
-			loi.Objects = append(loi.Objects, objInfo)
-		}
+	truncated := entries.len() > maxKeys || !allAtEOF
+	entries.truncate(maxKeys)
+	entries.listID = opts.ID
+	if !truncated {
+		return entries, io.EOF
 	}
-	loi.IsTruncated = loi.IsTruncated && len(loi.Objects) > 0
-	if loi.IsTruncated {
-		loi.NextMarker = encodeMarker(loi.Objects[len(loi.Objects)-1].Name, opts.ID)
-		fmt.Println(len(loi.Objects), "next marker:", loi.NextMarker)
-	}
-
-	return loi, nil
-}
-
-func (z *erasureZones) ListObjectVersions(ctx context.Context, bucket, prefix, marker, versionMarker, delimiter string, maxKeys int) (ListObjectVersionsInfo, error) {
-	return z.listObjectVersions(ctx, bucket, prefix, marker, versionMarker, delimiter, maxKeys)
-}
-
-func (z *erasureZones) ListObjects(ctx context.Context, bucket, prefix, marker, delimiter string, maxKeys int) (ListObjectsInfo, error) {
-	return z.listObjects(ctx, bucket, prefix, marker, delimiter, maxKeys)
+	return entries, nil
 }
 
 func (z *erasureZones) ListMultipartUploads(ctx context.Context, bucket, prefix, keyMarker, uploadIDMarker, delimiter string, maxUploads int) (ListMultipartsInfo, error) {
