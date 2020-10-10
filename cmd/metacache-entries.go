@@ -319,7 +319,7 @@ func (m *metaCacheEntriesSorted) merge(other metaCacheEntriesSorted, limit int) 
 		}
 	}
 	// Append anything left.
-	if limit > 0 && len(merged) < limit {
+	if limit < 0 || len(merged) < limit {
 		merged = append(merged, a...)
 		merged = append(merged, b...)
 	}

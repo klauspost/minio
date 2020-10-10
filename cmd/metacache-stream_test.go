@@ -22,6 +22,7 @@ import (
 	"io"
 	"io/ioutil"
 	"reflect"
+	"sync"
 	"testing"
 )
 
@@ -207,8 +208,11 @@ func Test_metacacheReader_readAll(t *testing.T) {
 	defer r.Close()
 	var readErr error
 	objs := make(chan metaCacheEntry, 1)
+	var wg sync.WaitGroup
+	wg.Add(1)
 	go func() {
 		readErr = r.readAll(context.Background(), objs)
+		wg.Done()
 	}()
 	want := loadMetacacheSampleNames
 	i := 0
@@ -218,6 +222,7 @@ func Test_metacacheReader_readAll(t *testing.T) {
 		}
 		i++
 	}
+	wg.Wait()
 	if readErr != nil {
 		t.Fatal(readErr)
 	}

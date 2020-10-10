@@ -19,6 +19,7 @@ package cmd
 import (
 	"bytes"
 	"reflect"
+	"sort"
 	"testing"
 )
 
@@ -73,18 +74,23 @@ func Test_metaCacheEntries_forwardTo(t *testing.T) {
 func Test_metaCacheEntries_merge(t *testing.T) {
 	org := loadMetacacheSampleEntries(t)
 	a, b := org.shallowClone(), org.shallowClone()
-
+	be := b.entries()
+	for i := range be {
+		//  Modify b so it isn't deduplicated.
+		be[i].metadata = []byte("something-else")
+	}
 	// Merge b into a
 	a.merge(b, -1)
-	want := loadMetacacheSampleNames
+	want := append(loadMetacacheSampleNames, loadMetacacheSampleNames...)
+	sort.Strings(want)
 	got := a.entries().names()
-	if len(got) != len(want)*2 {
-		t.Errorf("unexpected count, want %v, got %v", len(want)*2, len(got))
+	if len(got) != len(want) {
+		t.Errorf("unexpected count, want %v, got %v", len(want), len(got))
 	}
 
 	for i, name := range got {
-		if want[i/2] != name {
-			t.Errorf("unexpected name, want %q, got %q", want[i/2], name)
+		if want[i] != name {
+			t.Errorf("unexpected name, want %q, got %q", want[i], name)
 		}
 	}
 }

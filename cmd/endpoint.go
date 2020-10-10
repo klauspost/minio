@@ -276,7 +276,6 @@ func (l EndpointZones) Hostnames() []string {
 // remain consistent across the cluster.
 func (l EndpointZones) hostsSorted() []*xnet.Host {
 	peers, localPeer := l.peers()
-	fmt.Println("got peers", peers, "local:", localPeer)
 	sort.Strings(peers)
 	hosts := make([]*xnet.Host, len(peers))
 	for i, hostStr := range peers {
