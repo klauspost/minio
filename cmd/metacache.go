@@ -164,11 +164,11 @@ func loadBucketMetaCache(ctx context.Context, bucket string) (*bucketMetacache, 
 	go func() {
 		defer wg.Done()
 		dec := s2DecPool.Get().(*s2.Reader)
-		s2DecPool.Put(dec)
 		dec.Reset(r)
 		decErr = meta.DecodeMsg(msgp.NewReader(dec))
 		dec.Reset(nil)
 		s2DecPool.Put(dec)
+		r.CloseWithError(decErr)
 	}()
 	err := objAPI.GetObject(ctx, minioMetaBucket, pathJoin("buckets", bucket, ".metacache", "index.s2"), 0, -1, w, "", ObjectOptions{})
 	logger.LogIf(ctx, w.CloseWithError(err))
