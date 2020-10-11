@@ -142,7 +142,7 @@ func (o *listPathOptions) findFirstPart(fi FileInfo) (int, error) {
 		return 0, nil
 	}
 	debugPrintln := func(a ...interface{}) (n int, err error) { return 0, nil }
-	if false {
+	if true {
 		debugPrintln = fmt.Println
 	}
 	debugPrintln("searching for ", search)
@@ -159,6 +159,9 @@ func (o *listPathOptions) findFirstPart(fi FileInfo) (int, error) {
 		if !ok {
 			logger.LogIf(context.Background(), err)
 			return -1, err
+		}
+		if tmp.First == "" && tmp.Last == "" && tmp.EOS {
+			return 0, errFileNotFound
 		}
 		if tmp.First >= search {
 			debugPrintln("First >= search", v)
@@ -259,7 +262,8 @@ func (r *metacacheReader) filter(o listPathOptions) (entries metaCacheEntriesSor
 	return r.readN(o.Limit, o.InclDeleted, o.Prefix)
 }
 
-func (er erasureObjects) streamMetadataParts(ctx context.Context, o listPathOptions) (entries metaCacheEntriesSorted, err error) {
+func (er *erasureObjects) streamMetadataParts(ctx context.Context, o listPathOptions) (entries metaCacheEntriesSorted, err error) {
+	retries := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -272,7 +276,16 @@ func (er erasureObjects) streamMetadataParts(ctx context.Context, o listPathOpti
 		if err != nil {
 			if err == errFileNotFound {
 				// Not ready yet...
-				// TODO: It would probably be reasonable to check the cache status.
+				if retries == 10 {
+					err := o.checkMetacacheState(ctx)
+					logger.Info("waiting for first part (%s), err: %v", o.objectPath(0), err)
+					if err != nil {
+						return entries, err
+					}
+					retries = 0
+					continue
+				}
+				retries++
 				time.Sleep(100 * time.Millisecond)
 				continue
 			}
@@ -288,7 +301,16 @@ func (er erasureObjects) streamMetadataParts(ctx context.Context, o listPathOpti
 		switch err {
 		case nil:
 		case io.ErrUnexpectedEOF:
-			// TODO: It would probably be reasonable to check the cache status.
+			if retries == 10 {
+				err := o.checkMetacacheState(ctx)
+				logger.Info("waiting for metadata, err: %v", err)
+				if err != nil {
+					return entries, err
+				}
+				retries = 0
+				continue
+			}
+			retries++
 			time.Sleep(100 * time.Millisecond)
 			continue
 		case io.EOF:
@@ -309,10 +331,16 @@ func (er erasureObjects) streamMetadataParts(ctx context.Context, o listPathOpti
 				fi, metaArr, onlineDisks, err = er.getObjectFileInfo(ctx, minioMetaBucket, o.objectPath(partN), ObjectOptions{})
 				switch err {
 				case errFileNotFound:
-					// Not ready yet...
-					// Maybe check status after a second.
-					time.Sleep(100 * time.Millisecond)
-					continue
+					if retries == 10 {
+						err := o.checkMetacacheState(ctx)
+						logger.Info("waiting for part data (%v), err: %v", o.objectPath(partN), err)
+						if err != nil {
+							return entries, err
+						}
+						retries = 0
+						continue
+					}
+					retries++
 				default:
 					logger.LogIf(ctx, err)
 					return entries, err
@@ -373,9 +401,9 @@ func (er erasureObjects) streamMetadataParts(ctx context.Context, o listPathOpti
 }
 
 // Will return io.EOF if continuing would not yield more results.
-func (er erasureObjects) listPath(ctx context.Context, o listPathOptions) (entries metaCacheEntriesSorted, err error) {
+func (er *erasureObjects) listPath(ctx context.Context, o listPathOptions) (entries metaCacheEntriesSorted, err error) {
 	startTime := time.Now()
-	//fmt.Println("set listing bucket:", o.Bucket, "basedir:", o.BaseDir, "prefix:", o.Prefix)
+	fmt.Println("listPath bucket:", o.Bucket, "basedir:", o.BaseDir, "prefix:", o.Prefix)
 	// See if we have the listing stored.
 	if !o.Create {
 		entries, err := er.streamMetadataParts(ctx, o)
@@ -386,6 +414,27 @@ func (er erasureObjects) listPath(ctx context.Context, o listPathOptions) (entri
 		logger.LogIf(ctx, err)
 		return entries, err
 	}
+
+	rpcClient := globalNotificationSys.restClientFromHash(o.Bucket)
+	meta := o.newMetacache()
+	var metaMu sync.Mutex
+	defer func() {
+		if err != nil {
+			metaMu.Lock()
+			if meta.status != scanStateError {
+				meta.error = err.Error()
+				meta.status = scanStateError
+			}
+			lm := meta
+			metaMu.Unlock()
+			if rpcClient == nil {
+				localMetacacheMgr.getBucket(GlobalContext, o.Bucket).updateCacheEntry(lm)
+			} else {
+				rpcClient.UpdateMetacacheListing(context.Background(), lm)
+			}
+		}
+	}()
+	fmt.Println("scanning bucket:", o.Bucket, "basedir:", o.BaseDir, "prefix:", o.Prefix)
 
 	// Disconnect from call above, but cancel on exit.
 	ctx, cancel := context.WithCancel(GlobalContext)
@@ -439,11 +488,8 @@ func (er erasureObjects) listPath(ctx context.Context, o listPathOptions) (entri
 
 	go func() {
 		defer cancel()
-		meta := o.newMetacache()
-		var metaMu sync.Mutex
 		// Save continuous updates
 		go func() {
-			client := globalNotificationSys.restClientFromHash(o.Bucket)
 			ticker := time.NewTicker(10 * time.Second)
 			defer ticker.Stop()
 			var exit bool
@@ -458,10 +504,10 @@ func (er erasureObjects) listPath(ctx context.Context, o listPathOptions) (entri
 				metaMu.Unlock()
 				meta.endedCycle = intDataUpdateTracker.current()
 				var err error
-				if client == nil {
+				if rpcClient == nil {
 					lm, err = localMetacacheMgr.getBucket(GlobalContext, o.Bucket).updateCacheEntry(lm)
 				} else {
-					lm, err = client.UpdateMetacacheListing(context.Background(), lm)
+					lm, err = rpcClient.UpdateMetacacheListing(context.Background(), lm)
 				}
 				logger.LogIf(ctx, err)
 				if lm.status == scanStateError {
@@ -528,7 +574,6 @@ func (er erasureObjects) listPath(ctx context.Context, o listPathOptions) (entri
 					meta.status = scanStateError
 					meta.error = err.Error()
 					metaMu.Unlock()
-					cancel()
 					return
 				}
 				if entry.name == current.name || current.name == "" {
@@ -581,12 +626,14 @@ func (er erasureObjects) listPath(ctx context.Context, o listPathOptions) (entri
 		}
 		closeChannels()
 		metaMu.Lock()
-		if err := bw.Close(); err != nil {
-			meta.error = err.Error()
-			meta.status = scanStateError
-		} else {
-			meta.status = scanStateSuccess
-			meta.endedCycle = intDataUpdateTracker.current()
+		if meta.error == "" {
+			if err := bw.Close(); err != nil {
+				meta.error = err.Error()
+				meta.status = scanStateError
+			} else {
+				meta.status = scanStateSuccess
+				meta.endedCycle = intDataUpdateTracker.current()
+			}
 		}
 		metaMu.Unlock()
 	}()

@@ -22,7 +22,6 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"io"
 	"io/ioutil"
 	"os"
@@ -181,9 +180,6 @@ func (d *dataUpdateTracker) latestWithDir(dir string) uint64 {
 	for {
 		f := d.History.find(idx)
 		if f == nil || f.bf.containsDir(dir) {
-			if f == nil {
-				fmt.Println("no history for idx", idx)
-			}
 			break
 		}
 		idx--

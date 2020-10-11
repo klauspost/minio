@@ -18,6 +18,9 @@ package cmd
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -40,8 +43,8 @@ type metacacheManager struct {
 
 // initManager will start async saving the cache.
 func (m *metacacheManager) initManager() {
+	// Start saver when object layer is ready.
 	go func() {
-		// Start saver when object layer is ready.
 		objAPI := newObjectLayerFn()
 		for objAPI == nil {
 			time.Sleep(time.Second)
@@ -76,6 +79,10 @@ func (m *metacacheManager) getBucket(ctx context.Context, bucket string) *bucket
 	b, ok := m.buckets[bucket]
 	m.mu.RUnlock()
 	if ok {
+		if b.bucket != bucket {
+			logger.Info("getBucket: cached bucket %s does not match this bucket %s", b.bucket, bucket)
+			debug.PrintStack()
+		}
 		return b
 	}
 
@@ -84,12 +91,57 @@ func (m *metacacheManager) getBucket(ctx context.Context, bucket string) *bucket
 	b, ok = m.buckets[bucket]
 	if ok {
 		m.mu.Unlock()
+		if b.bucket != bucket {
+			logger.Info("getBucket: newly cached bucket %s does not match this bucket %s", b.bucket, bucket)
+			debug.PrintStack()
+		}
 		return b
 	}
 	b, err := loadBucketMetaCache(context.Background(), bucket)
 	if err == nil {
+		if b.bucket != bucket {
+			logger.Info("getBucket: loaded bucket %s does not match this bucket %s", b.bucket, bucket)
+			debug.PrintStack()
+		}
 		m.buckets[bucket] = b
 	}
 	m.mu.Unlock()
 	return b
+}
+
+// checkMetacacheState should be used if data is not updating.
+// Should only be called if
+func (o listPathOptions) checkMetacacheState(ctx context.Context) error {
+	// We operate on a copy...
+	o.Create = false
+	rpc := globalNotificationSys.restClientFromHash(o.Bucket)
+	var cache metacache
+	if rpc == nil {
+		// Local
+		cache = localMetacacheMgr.getBucket(ctx, o.Bucket).findCache(o)
+	} else {
+		c, err := rpc.GetMetacacheListing(ctx, o)
+		if err != nil {
+			return err
+		}
+		cache = *c
+	}
+	if cache.status == scanStateNone {
+		return errFileNotFound
+	}
+	if cache.status == scanStateSuccess {
+		if time.Since(cache.lastUpdate) > 10*time.Second {
+			return fmt.Errorf("timeout: Finished and data not available after 10 seconds")
+		}
+		return nil
+	}
+	if cache.error != "" {
+		return errors.New(cache.error)
+	}
+	if cache.status == scanStateStarted {
+		if time.Since(cache.lastUpdate) > metacacheMaxRunningAge {
+			return errors.New("cache listing not updating")
+		}
+	}
+	return nil
 }

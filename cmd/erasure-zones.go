@@ -23,6 +23,7 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -1273,10 +1274,10 @@ func (z *erasureZones) listPath(ctx context.Context, bucket, prefix, marker, del
 		Separator:   delimiter,
 		Create:      createNew,
 	}
-
+	var cache metacache
 	if createNew {
 		opts.CurrentCycle = intDataUpdateTracker.current()
-		opts.OldestCycle = globalNotificationSys.findEarliestCleanBloomFilter(ctx, pathJoin(opts.Bucket, opts.BaseDir))
+		opts.OldestCycle = globalNotificationSys.findEarliestCleanBloomFilter(ctx, path.Join(opts.Bucket, opts.BaseDir))
 		var cache metacache
 		rpc := globalNotificationSys.restClientFromHash(bucket)
 		if rpc == nil {
@@ -1289,6 +1290,9 @@ func (z *erasureZones) listPath(ctx context.Context, bucket, prefix, marker, del
 			}
 			cache = *c
 		}
+		if cache.fileNotFound {
+			return entries, errFileNotFound
+		}
 		// Only create if we created a new.
 		opts.Create = opts.ID == cache.id
 		opts.ID = cache.id
@@ -1297,10 +1301,12 @@ func (z *erasureZones) listPath(ctx context.Context, bucket, prefix, marker, del
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	var errs []error
+	asked := 0
 	mu.Lock()
 	for _, zone := range z.zones {
 		for _, set := range zone.sets {
 			wg.Add(1)
+			asked++
 			go func(i int, set *erasureObjects) {
 				defer wg.Done()
 				e, err := set.listPath(ctx, opts)
@@ -1331,15 +1337,30 @@ func (z *erasureZones) listPath(ctx context.Context, bucket, prefix, marker, del
 	mu.Unlock()
 	wg.Wait()
 	allAtEOF := true
+	all404 := true
 	for _, err := range errs {
 		if err == nil {
 			allAtEOF = false
+			all404 = false
 			continue
 		}
 		if err == io.EOF {
+			all404 = false
 			continue
 		}
 		return entries, err
+	}
+	if all404 {
+		cache.status = scanStateSuccess
+		cache.fileNotFound = true
+		client := globalNotificationSys.restClientFromHash(opts.Bucket)
+		if client == nil {
+			cache, err = localMetacacheMgr.getBucket(GlobalContext, opts.Bucket).updateCacheEntry(cache)
+		} else {
+			cache, err = client.UpdateMetacacheListing(context.Background(), cache)
+		}
+		logger.LogIf(ctx, err)
+		return entries, errFileNotFound
 	}
 	truncated := entries.len() > maxKeys || !allAtEOF
 	entries.truncate(maxKeys)

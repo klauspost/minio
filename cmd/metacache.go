@@ -19,10 +19,10 @@ package cmd
 import (
 	"bytes"
 	"context"
-	"encoding/gob"
 	"errors"
 	"io"
 	"path"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -57,6 +57,7 @@ type metacache struct {
 	root         string     `msg:"root"`
 	recursive    bool       `msg:"rec"`
 	status       scanStatus `msg:"stat"`
+	fileNotFound bool       `msg:"fnf"`
 	error        string     `msg:"err"`
 	started      time.Time  `msg:"st"`
 	ended        time.Time  `msg:"end"`
@@ -65,10 +66,6 @@ type metacache struct {
 	startedCycle uint64     `msg:"stc"`
 	endedCycle   uint64     `msg:"endc"`
 	dataVersion  uint8      `msg:"v"`
-}
-
-func init() {
-	gob.Register(metacache{})
 }
 
 func (m *metacache) finished() bool {
@@ -185,6 +182,10 @@ func loadBucketMetaCache(ctx context.Context, bucket string) (*bucketMetacache, 
 		logger.LogIf(ctx, decErr)
 		return newBucketMetacache(bucket), err
 	}
+	if meta.bucket != bucket {
+		logger.Info("loadBucketMetaCache: loaded cache name mismatch, want %s, got %s. Discarding.", bucket, meta.bucket)
+		return newBucketMetacache(bucket), nil
+	}
 	return &meta, nil
 }
 
@@ -232,11 +233,12 @@ func (b *bucketMetacache) save(ctx context.Context) error {
 // If none can be found a new is created with the provided ID.
 func (b *bucketMetacache) findCache(o listPathOptions) metacache {
 	if b == nil {
-		logger.Info("bucketMetacache.findCache: nil cache for bucket", o.Bucket)
+		logger.Info("bucketMetacache.findCache: nil cache for bucket %s", o.Bucket)
 		return metacache{}
 	}
 	if o.Bucket != b.bucket {
-		logger.Info("bucketMetacache.findCache: bucket does not match", o.Bucket, b.bucket)
+		logger.Info("bucketMetacache.findCache: bucket %s does not match this bucket %s", o.Bucket, b.bucket)
+		debug.PrintStack()
 		return metacache{}
 	}
 
@@ -318,6 +320,7 @@ func (b *bucketMetacache) findCache(o listPathOptions) metacache {
 	if !o.Create {
 		return metacache{
 			id:     o.ID,
+			bucket: o.Bucket,
 			status: scanStateNone,
 		}
 	}
@@ -418,6 +421,7 @@ func (b *bucketMetacache) updateCacheEntry(update metacache) (metacache, error) 
 		existing.error = update.error
 		existing.status = scanStateError
 	}
+	existing.fileNotFound = existing.fileNotFound || update.fileNotFound
 	b.caches[update.id] = existing
 	b.updated = true
 	return existing, nil
