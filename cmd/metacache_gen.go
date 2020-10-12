@@ -260,6 +260,12 @@ func (z *metacache) DecodeMsg(dc *msgp.Reader) (err error) {
 				}
 				z.status = scanStatus(zb0002)
 			}
+		case "fnf":
+			z.fileNotFound, err = dc.ReadBool()
+			if err != nil {
+				err = msgp.WrapError(err, "fileNotFound")
+				return
+			}
 		case "err":
 			z.error, err = dc.ReadString()
 			if err != nil {
@@ -321,9 +327,9 @@ func (z *metacache) DecodeMsg(dc *msgp.Reader) (err error) {
 
 // EncodeMsg implements msgp.Encodable
 func (z *metacache) EncodeMsg(en *msgp.Writer) (err error) {
-	// map header, size 13
+	// map header, size 14
 	// write "id"
-	err = en.Append(0x8d, 0xa2, 0x69, 0x64)
+	err = en.Append(0x8e, 0xa2, 0x69, 0x64)
 	if err != nil {
 		return
 	}
@@ -370,6 +376,16 @@ func (z *metacache) EncodeMsg(en *msgp.Writer) (err error) {
 	err = en.WriteUint8(uint8(z.status))
 	if err != nil {
 		err = msgp.WrapError(err, "status")
+		return
+	}
+	// write "fnf"
+	err = en.Append(0xa3, 0x66, 0x6e, 0x66)
+	if err != nil {
+		return
+	}
+	err = en.WriteBool(z.fileNotFound)
+	if err != nil {
+		err = msgp.WrapError(err, "fileNotFound")
 		return
 	}
 	// write "err"
@@ -458,9 +474,9 @@ func (z *metacache) EncodeMsg(en *msgp.Writer) (err error) {
 // MarshalMsg implements msgp.Marshaler
 func (z *metacache) MarshalMsg(b []byte) (o []byte, err error) {
 	o = msgp.Require(b, z.Msgsize())
-	// map header, size 13
+	// map header, size 14
 	// string "id"
-	o = append(o, 0x8d, 0xa2, 0x69, 0x64)
+	o = append(o, 0x8e, 0xa2, 0x69, 0x64)
 	o = msgp.AppendString(o, z.id)
 	// string "b"
 	o = append(o, 0xa1, 0x62)
@@ -474,6 +490,9 @@ func (z *metacache) MarshalMsg(b []byte) (o []byte, err error) {
 	// string "stat"
 	o = append(o, 0xa4, 0x73, 0x74, 0x61, 0x74)
 	o = msgp.AppendUint8(o, uint8(z.status))
+	// string "fnf"
+	o = append(o, 0xa3, 0x66, 0x6e, 0x66)
+	o = msgp.AppendBool(o, z.fileNotFound)
 	// string "err"
 	o = append(o, 0xa3, 0x65, 0x72, 0x72)
 	o = msgp.AppendString(o, z.error)
@@ -553,6 +572,12 @@ func (z *metacache) UnmarshalMsg(bts []byte) (o []byte, err error) {
 				}
 				z.status = scanStatus(zb0002)
 			}
+		case "fnf":
+			z.fileNotFound, bts, err = msgp.ReadBoolBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "fileNotFound")
+				return
+			}
 		case "err":
 			z.error, bts, err = msgp.ReadStringBytes(bts)
 			if err != nil {
@@ -615,7 +640,7 @@ func (z *metacache) UnmarshalMsg(bts []byte) (o []byte, err error) {
 
 // Msgsize returns an upper bound estimate of the number of bytes occupied by the serialized message
 func (z *metacache) Msgsize() (s int) {
-	s = 1 + 3 + msgp.StringPrefixSize + len(z.id) + 2 + msgp.StringPrefixSize + len(z.bucket) + 5 + msgp.StringPrefixSize + len(z.root) + 4 + msgp.BoolSize + 5 + msgp.Uint8Size + 4 + msgp.StringPrefixSize + len(z.error) + 3 + msgp.TimeSize + 4 + msgp.TimeSize + 2 + msgp.TimeSize + 3 + msgp.TimeSize + 4 + msgp.Uint64Size + 5 + msgp.Uint64Size + 2 + msgp.Uint8Size
+	s = 1 + 3 + msgp.StringPrefixSize + len(z.id) + 2 + msgp.StringPrefixSize + len(z.bucket) + 5 + msgp.StringPrefixSize + len(z.root) + 4 + msgp.BoolSize + 5 + msgp.Uint8Size + 4 + msgp.BoolSize + 4 + msgp.StringPrefixSize + len(z.error) + 3 + msgp.TimeSize + 4 + msgp.TimeSize + 2 + msgp.TimeSize + 3 + msgp.TimeSize + 4 + msgp.Uint64Size + 5 + msgp.Uint64Size + 2 + msgp.Uint8Size
 	return
 }
 
