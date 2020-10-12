@@ -220,15 +220,7 @@ func (client *storageRESTClient) WalkDir(ctx context.Context, opts WalkDirOption
 		logger.LogIf(ctx, err)
 		return err
 	}
-	rc, err := waitForHTTPResponseCloser(respBody)
-	if err != nil {
-		logger.LogIf(ctx, err)
-		return err
-	}
-	defer rc.Close()
-	_, err = io.Copy(wr, respBody)
-	logger.LogIf(ctx, err)
-	return err
+	return waitForHTTPStream(respBody, wr)
 }
 
 // WalkDirHandler - remote caller to list files and folders in a requested directory path.
@@ -240,12 +232,10 @@ func (s *storageRESTServer) WalkDirHandler(w http.ResponseWriter, r *http.Reques
 	volume := vars[storageRESTVolume]
 	dirPath := vars[storageRESTDirPath]
 	recursive, err := strconv.ParseBool(vars[storageRESTRecursive])
-	done := keepHTTPResponseAlive(w)
 	if err != nil {
-		done(err)
+		s.writeErrorResponse(w, err)
 		return
 	}
-	done(nil)
-	logger.LogIf(r.Context(), s.storage.WalkDir(r.Context(), WalkDirOptions{Bucket: volume, BaseDir: dirPath, Recursive: recursive}, w))
-	// FIXME: WE NEED TO RETURN ERRORS!
+	writer := streamHTTPResponse(w)
+	writer.CloseWithError(s.storage.WalkDir(r.Context(), WalkDirOptions{Bucket: volume, BaseDir: dirPath, Recursive: recursive}, writer))
 }

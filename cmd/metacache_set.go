@@ -471,7 +471,9 @@ func (er *erasureObjects) listPath(ctx context.Context, o listPathOptions) (entr
 		go func() {
 			err := d.WalkDir(ctx, WalkDirOptions{Bucket: o.Bucket, BaseDir: o.BaseDir, Recursive: o.Recursive || o.Separator != SlashSeparator}, w)
 			w.CloseWithError(err)
-			logger.LogIf(ctx, err)
+			if err != io.EOF {
+				logger.LogIf(ctx, err)
+			}
 		}()
 	}
 

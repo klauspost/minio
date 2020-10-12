@@ -664,10 +664,8 @@ type bloomFilterResponse struct {
 // ObjectPathUpdated indicates a path has been updated.
 // The function will never block.
 func ObjectPathUpdated(s string) {
-	fmt.Println("DIRTY:", s)
 	if strings.HasPrefix(s, minioMetaBucket) {
 		return
-		//debug.PrintStack()
 	}
 	select {
 	case objectUpdatedCh <- s:

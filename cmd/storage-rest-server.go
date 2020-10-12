@@ -18,6 +18,8 @@ package cmd
 
 import (
 	"bufio"
+	"bytes"
+	"encoding/binary"
 	"encoding/gob"
 	"encoding/hex"
 	"errors"
@@ -809,32 +811,138 @@ func (f drainCloser) Close() error {
 	return nil
 }
 
-// waitForHTTPResponseCloser will wait for responses where
-// keepHTTPResponseAlive has been used.
+// httpStreamResponse allows streaming a response, but still send an error.
+type httpStreamResponse struct {
+	done  chan error
+	block chan []byte
+	err   error
+}
+
+// Write part of the the streaming response.
+// Note that upstream errors are currently not forwarded, but may be in the future.
+func (h *httpStreamResponse) Write(b []byte) (int, error) {
+	tmp := make([]byte, len(b))
+	copy(tmp, b)
+	h.block <- tmp
+	return len(b), h.err
+}
+
+// CloseWithError will close the stream and return the specified error.
+// This can be done several times, but only the first error will be sent.
+// After calling this the stream should not be written to.
+func (h *httpStreamResponse) CloseWithError(err error) {
+	if h.done == nil {
+		return
+	}
+	h.done <- err
+	h.err = err
+	close(h.done)
+	h.done = nil
+}
+
+// streamHTTPResponse can be used to avoid timeouts with long storage
+// operations, such as bitrot verification or data usage crawling.
+// Every 10 seconds a space character is sent.
+// The returned function should always be called to release resources.
+// An optional error can be sent which will be picked as text only error,
+// without its original type by the receiver.
+// waitForHTTPStream should be used to the receiving side.
+func streamHTTPResponse(w http.ResponseWriter) *httpStreamResponse {
+	doneCh := make(chan error)
+	blockCh := make(chan []byte)
+	h := httpStreamResponse{done: doneCh, block: blockCh}
+	go func() {
+		ticker := time.NewTicker(time.Second * 10)
+		for {
+			select {
+			case <-ticker.C:
+				// Response not ready, write a filler byte.
+				w.Write([]byte{32})
+				w.(http.Flusher).Flush()
+			case err := <-doneCh:
+				ticker.Stop()
+				if err != nil {
+					var buf bytes.Buffer
+					enc := gob.NewEncoder(&buf)
+					if ee := enc.Encode(err); ee == nil {
+						w.Write([]byte{3})
+						w.Write(buf.Bytes())
+					} else {
+						w.Write([]byte{1})
+						w.Write([]byte(err.Error()))
+					}
+				} else {
+					w.Write([]byte{0})
+				}
+				return
+			case block := <-blockCh:
+				var tmp [5]byte
+				tmp[0] = 2
+				binary.LittleEndian.PutUint32(tmp[1:], uint32(len(block)))
+				w.Write(tmp[:])
+				w.Write(block)
+				w.(http.Flusher).Flush()
+			}
+		}
+	}()
+	return &h
+}
+
+// waitForHTTPStream will wait for responses where
+// streamHTTPResponse has been used.
 // The returned reader contains the payload and must be closed if no error is returned.
-func waitForHTTPResponseCloser(respBody io.ReadCloser) (io.ReadCloser, error) {
+func waitForHTTPStream(respBody io.ReadCloser, w io.Writer) error {
 	var tmp [1]byte
 	for {
 		_, err := io.ReadFull(respBody, tmp[:])
 		if err != nil {
-			return nil, err
+			return err
 		}
 		// Check if we have a response ready or a filler byte.
 		switch tmp[0] {
 		case 0:
-			return drainCloser{rc: respBody}, nil
+			// 0 is unbuffered, copy the rest.
+			_, err := io.Copy(w, respBody)
+			respBody.Close()
+			if err == io.EOF {
+				return nil
+			}
+			return err
 		case 1:
 			errorText, err := ioutil.ReadAll(respBody)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			respBody.Close()
-			return nil, errors.New(string(errorText))
+			return errors.New(string(errorText))
+		case 3:
+			// Typed error
+			defer respBody.Close()
+			dec := gob.NewDecoder(respBody)
+			var err error
+			if de := dec.Decode(&err); de == nil {
+				return err
+			}
+			return errors.New("rpc error")
+		case 2:
+			// Block of data
+			var tmp [4]byte
+			_, err := io.ReadFull(respBody, tmp[:])
+			if err != nil {
+				return err
+			}
+
+			length := binary.LittleEndian.Uint32(tmp[:])
+			_, err = io.CopyN(w, respBody, int64(length))
+			if err != nil {
+				return err
+			}
+			continue
 		case 32:
 			continue
 		default:
 			go xhttp.DrainBody(respBody)
-			return nil, fmt.Errorf("unexpected filler byte: %d", tmp[0])
+			return fmt.Errorf("unexpected filler byte: %d", tmp[0])
 		}
 	}
 }
