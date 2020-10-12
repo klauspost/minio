@@ -94,9 +94,10 @@ func (s *xlStorage) WalkDir(ctx context.Context, opts WalkDirOptions, wr io.Writ
 		entries, err := s.ListDir(ctx, opts.Bucket, current, -1)
 		if err != nil {
 			// Folder could have gone away in-between
-			if err != errVolumeNotFound {
+			if err != errVolumeNotFound && err != errFileNotFound {
 				logger.LogIf(ctx, err)
 			}
+			// Forward some errors?
 			return nil
 		}
 

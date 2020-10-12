@@ -472,7 +472,7 @@ func renameData(ctx context.Context, disks []StorageAPI, srcBucket, srcEntry, da
 // rename - common function that renamePart and renameObject use to rename
 // the respective underlying storage layer representations.
 func rename(ctx context.Context, disks []StorageAPI, srcBucket, srcEntry, dstBucket, dstEntry string, isDir bool, writeQuorum int, ignoredErr []error) ([]StorageAPI, error) {
-
+	defer ObjectPathUpdated(path.Join(dstBucket, dstEntry))
 	if isDir {
 		dstEntry = retainSlash(dstEntry)
 		srcEntry = retainSlash(srcEntry)
@@ -785,6 +785,11 @@ func (er erasureObjects) DeleteObjects(ctx context.Context, bucket string, objec
 		// Read() requests alone which we already do.
 		writeQuorums[i] = getWriteQuorum(len(storageDisks))
 	}
+	defer func() {
+		for _, obj := range objects {
+			ObjectPathUpdated(pathJoin(bucket, obj.ObjectName))
+		}
+	}()
 
 	versions := make([]FileInfo, len(objects))
 	for i := range objects {

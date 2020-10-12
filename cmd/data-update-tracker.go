@@ -22,6 +22,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"os"
@@ -46,7 +47,7 @@ const (
 	dataUpdateTrackerQueueSize = 10000
 
 	dataUpdateTrackerFilename     = dataUsageBucket + SlashSeparator + ".tracker.bin"
-	dataUpdateTrackerVersion      = 3
+	dataUpdateTrackerVersion      = 4
 	dataUpdateTrackerSaveInterval = 5 * time.Minute
 )
 
@@ -171,11 +172,28 @@ func (d *dataUpdateTracker) current() uint64 {
 // latestWithDir returns the highest index that contains the directory.
 // This means that any cycle higher than this does NOT contain the entry.
 func (d *dataUpdateTracker) latestWithDir(dir string) uint64 {
+	bucket, _ := path2BucketObjectWithBasePath("", dir)
+	if bucket == "" {
+		if d.debug && len(dir) > 0 {
+			logger.Info(color.Green("data-usage:")+" no bucket (%s)", dir)
+		}
+		return d.current()
+	}
+	if isReservedOrInvalidBucket(bucket, false) {
+		if false && d.debug {
+			logger.Info(color.Green("data-usage:")+" isReservedOrInvalidBucket: %v, entry: %v", bucket, dir)
+		}
+		return d.current()
+	}
+
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.Current.bf.containsDir(dir) {
+		fmt.Println("current bloom contains dir", dir)
 		return d.Current.idx
 	}
+	fmt.Println("current bloom does NOT contains dir", dir)
+
 	idx := d.Current.idx - 1
 	for {
 		f := d.History.find(idx)
@@ -479,11 +497,14 @@ func (d *dataUpdateTracker) startCollector(ctx context.Context) {
 				continue
 			}
 			split := splitPathDeterministic(in)
-
-			// Add all paths until level 3.
+			if !strings.HasSuffix(in, "/") {
+				// Trim object name.
+				split = split[:len(split)-1]
+			}
+			// Add all paths until done.
 			d.mu.Lock()
 			for i := range split {
-				if d.debug && false {
+				if d.debug || true {
 					logger.Info(color.Green("dataUpdateTracker:") + " Marking path dirty: " + color.Blue(path.Join(split[:i+1]...)))
 				}
 				d.Current.bf.AddString(hashPath(path.Join(split[:i+1]...)).String())
@@ -614,10 +635,6 @@ func splitPathDeterministic(in string) []string {
 		split = split[:len(split)-1]
 	}
 
-	// Return up to 3 parts.
-	if len(split) > 3 {
-		split = split[:3]
-	}
 	return split
 }
 
@@ -647,6 +664,11 @@ type bloomFilterResponse struct {
 // ObjectPathUpdated indicates a path has been updated.
 // The function will never block.
 func ObjectPathUpdated(s string) {
+	fmt.Println("DIRTY:", s)
+	if strings.HasPrefix(s, minioMetaBucket) {
+		return
+		//debug.PrintStack()
+	}
 	select {
 	case objectUpdatedCh <- s:
 	default:
