@@ -425,6 +425,9 @@ func undoRename(disks []StorageAPI, srcBucket, srcEntry, dstBucket, dstEntry str
 // Similar to rename but renames data from srcEntry to dstEntry at dataDir
 func renameData(ctx context.Context, disks []StorageAPI, srcBucket, srcEntry, dataDir, dstBucket, dstEntry string, writeQuorum int, ignoredErr []error) ([]StorageAPI, error) {
 	dataDir = retainSlash(dataDir)
+	defer ObjectPathUpdated(path.Join(srcBucket, srcEntry))
+	defer ObjectPathUpdated(path.Join(dstBucket, dstEntry))
+
 	g := errgroup.WithNErrs(len(disks))
 
 	// Rename file on all underlying storage disks.
@@ -472,11 +475,12 @@ func renameData(ctx context.Context, disks []StorageAPI, srcBucket, srcEntry, da
 // rename - common function that renamePart and renameObject use to rename
 // the respective underlying storage layer representations.
 func rename(ctx context.Context, disks []StorageAPI, srcBucket, srcEntry, dstBucket, dstEntry string, isDir bool, writeQuorum int, ignoredErr []error) ([]StorageAPI, error) {
-	defer ObjectPathUpdated(path.Join(dstBucket, dstEntry))
 	if isDir {
 		dstEntry = retainSlash(dstEntry)
 		srcEntry = retainSlash(srcEntry)
 	}
+	defer ObjectPathUpdated(path.Join(srcBucket, srcEntry))
+	defer ObjectPathUpdated(path.Join(dstBucket, dstEntry))
 
 	g := errgroup.WithNErrs(len(disks))
 
@@ -703,10 +707,9 @@ func (er erasureObjects) putObject(ctx context.Context, bucket string, object st
 }
 
 func (er erasureObjects) deleteObjectVersion(ctx context.Context, bucket, object string, writeQuorum int, fi FileInfo) error {
+	defer ObjectPathUpdated(path.Join(bucket, object))
 	disks := er.getDisks()
-
 	g := errgroup.WithNErrs(len(disks))
-
 	for index := range disks {
 		index := index
 		g.Go(func() error {
@@ -785,11 +788,6 @@ func (er erasureObjects) DeleteObjects(ctx context.Context, bucket string, objec
 		// Read() requests alone which we already do.
 		writeQuorums[i] = getWriteQuorum(len(storageDisks))
 	}
-	defer func() {
-		for _, obj := range objects {
-			ObjectPathUpdated(pathJoin(bucket, obj.ObjectName))
-		}
-	}()
 
 	versions := make([]FileInfo, len(objects))
 	for i := range objects {
@@ -856,6 +854,7 @@ func (er erasureObjects) DeleteObjects(ctx context.Context, bucket string, objec
 		}
 		errs[objIndex] = reduceWriteQuorumErrs(ctx, diskErrs, objectOpIgnoredErrs, writeQuorums[objIndex])
 		if errs[objIndex] == nil {
+			ObjectPathUpdated(pathJoin(bucket, objects[objIndex].ObjectName))
 			if versions[objIndex].Deleted {
 				dobjects[objIndex] = DeletedObject{
 					DeleteMarker:          versions[objIndex].Deleted,
@@ -895,6 +894,7 @@ func (er erasureObjects) DeleteObjects(ctx context.Context, bucket string, objec
 // any error as it is not necessary for the handler to reply back a
 // response to the client request.
 func (er erasureObjects) DeleteObject(ctx context.Context, bucket, object string, opts ObjectOptions) (objInfo ObjectInfo, err error) {
+	defer ObjectPathUpdated(path.Join(bucket, object))
 	goi, gerr := er.GetObjectInfo(ctx, bucket, object, opts)
 	if gerr != nil && goi.Name == "" {
 		switch gerr.(type) {

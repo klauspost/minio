@@ -342,6 +342,7 @@ func (er erasureObjects) healObject(ctx context.Context, bucket string, object s
 	if pErr != nil {
 		return result, toObjectErr(pErr, bucket, object)
 	}
+	defer ObjectPathUpdated(pathJoin(bucket, object))
 
 	cleanFileInfo := func(fi FileInfo) FileInfo {
 		// Returns a copy of the 'fi' with checksums and parts nil'ed.
