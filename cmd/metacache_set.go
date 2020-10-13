@@ -84,18 +84,23 @@ func init() {
 // gatherResults will collect all results on the input channel and filter results according to the options.
 // Caller should close the channel when done.
 // The returned function will return the results once there is enough or input is closed.
-func (o *listPathOptions) gatherResults(in <-chan metaCacheEntry) func() metaCacheEntriesSorted {
+func (o *listPathOptions) gatherResults(in <-chan metaCacheEntry) func() (metaCacheEntriesSorted, error) {
 	var resultsDone = make(chan metaCacheEntriesSorted)
 	// Copy so we can mutate
 	resCh := resultsDone
+	resErr := io.EOF
 	go func() {
 		var results metaCacheEntriesSorted
 		for entry := range in {
 			if o.Limit > 0 && results.len() > o.Limit {
 				if resCh != nil {
+					resErr = nil
 					resCh <- results
 					resCh = nil
 				}
+				continue
+			}
+			if entry.isDir() {
 				continue
 			}
 			//fmt.Println("gather got:", entry.name)
@@ -121,12 +126,12 @@ func (o *listPathOptions) gatherResults(in <-chan metaCacheEntry) func() metaCac
 			results.o = append(results.o, entry)
 		}
 		if resCh != nil {
+			resErr = io.EOF
 			resCh <- results
-			resCh = nil
 		}
 	}()
-	return func() metaCacheEntriesSorted {
-		return <-resultsDone
+	return func() (metaCacheEntriesSorted, error) {
+		return <-resultsDone, resErr
 	}
 }
 
@@ -640,5 +645,5 @@ func (er *erasureObjects) listPath(ctx context.Context, o listPathOptions) (entr
 		metaMu.Unlock()
 	}()
 
-	return filteredResults(), nil
+	return filteredResults()
 }

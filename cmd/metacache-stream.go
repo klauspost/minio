@@ -475,7 +475,7 @@ func (r *metacacheReader) readN(n int, inclDeleted bool, prefix string) (metaCac
 	}
 
 	if r.current.name != "" {
-		if (inclDeleted || !r.current.isLatestDeletemarker()) && r.current.hasPrefix(prefix) {
+		if (inclDeleted || !r.current.isLatestDeletemarker()) && r.current.hasPrefix(prefix) && !r.current.isDir() {
 			res = append(res, r.current)
 		}
 		r.current.name = ""
@@ -515,7 +515,7 @@ func (r *metacacheReader) readN(n int, inclDeleted bool, prefix string) (metaCac
 			r.err = err
 			return metaCacheEntriesSorted{o: res}, err
 		}
-		if !inclDeleted && meta.isLatestDeletemarker() {
+		if meta.isDir() && !inclDeleted && meta.isLatestDeletemarker() {
 			continue
 		}
 		res = append(res, meta)

@@ -41,6 +41,7 @@ func TestGetSource(t *testing.T) {
 
 // Test lock race
 func TestNSLockRace(t *testing.T) {
+	t.Skip("unreasonably slow")
 	ctx := context.Background()
 
 	for i := 0; i < 10000; i++ {

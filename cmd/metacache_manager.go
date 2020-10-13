@@ -97,7 +97,8 @@ func (m *metacacheManager) getBucket(ctx context.Context, bucket string) *bucket
 		}
 		return b
 	}
-	b, err := loadBucketMetaCache(context.Background(), bucket)
+	// Load global context, so canceling doesn't abort it.
+	b, err := loadBucketMetaCache(GlobalContext, bucket)
 	if err == nil {
 		if b.bucket != bucket {
 			logger.Info("getBucket: loaded bucket %s does not match this bucket %s", b.bucket, bucket)

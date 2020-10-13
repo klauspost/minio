@@ -602,7 +602,9 @@ func testListObjects(obj ObjectLayer, instanceType string, t1 TestErrHandler) {
 				// otherwise it may lead to index out of range error in
 				// assertion following this.
 				if len(testCase.result.Objects) != len(result.Objects) {
-					t.Fatalf("Test %d: %s: Expected number of object in the result to be '%d', but found '%d' objects instead", i+1, instanceType, len(testCase.result.Objects), len(result.Objects))
+					t.Logf("want: %v", objInfoNames(testCase.result.Objects))
+					t.Logf("got: %v", objInfoNames(result.Objects))
+					t.Errorf("Test %d: %s: Expected number of object in the result to be '%d', but found '%d' objects instead", i+1, instanceType, len(testCase.result.Objects), len(result.Objects))
 				}
 				for j := 0; j < len(testCase.result.Objects); j++ {
 					if testCase.result.Objects[j].Name != result.Objects[j].Name {
@@ -616,9 +618,15 @@ func testListObjects(obj ObjectLayer, instanceType string, t1 TestErrHandler) {
 				}
 
 				if len(testCase.result.Prefixes) != len(result.Prefixes) {
-					t.Fatalf("Test %d: %s: Expected number of prefixes in the result to be '%d', but found '%d' prefixes instead", i+1, instanceType, len(testCase.result.Prefixes), len(result.Prefixes))
+					t.Logf("want: %v", testCase.result.Prefixes)
+					t.Logf("got: %v", result.Prefixes)
+					t.Errorf("Test %d: %s: Expected number of prefixes in the result to be '%d', but found '%d' prefixes instead", i+1, instanceType, len(testCase.result.Prefixes), len(result.Prefixes))
 				}
 				for j := 0; j < len(testCase.result.Prefixes); j++ {
+					if j >= len(result.Prefixes) {
+						t.Errorf("Test %d: %s: Expected prefix name to be \"%s\", but found no result", i+1, instanceType, testCase.result.Prefixes[j])
+						continue
+					}
 					if testCase.result.Prefixes[j] != result.Prefixes[j] {
 						t.Errorf("Test %d: %s: Expected prefix name to be \"%s\", but found \"%s\" instead", i+1, instanceType, testCase.result.Prefixes[j], result.Prefixes[j])
 					}
@@ -647,6 +655,14 @@ func testListObjects(obj ObjectLayer, instanceType string, t1 TestErrHandler) {
 			}
 		})
 	}
+}
+
+func objInfoNames(o []ObjectInfo) []string {
+	var res = make([]string, len(o))
+	for i := range o {
+		res[i] = o[i].Name
+	}
+	return res
 }
 
 // Wrapper for calling ListObjectVersions tests for both Erasure multiple disks and single node setup.

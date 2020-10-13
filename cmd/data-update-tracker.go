@@ -482,6 +482,8 @@ func (d *dataUpdateTracker) startCollector(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case in := <-d.input:
+			logger.Info(color.Green("data-usage:")+" got (%s)", in)
+
 			bucket, _ := path2BucketObjectWithBasePath("", in)
 			if bucket == "" {
 				if d.debug && len(in) > 0 {
@@ -491,7 +493,7 @@ func (d *dataUpdateTracker) startCollector(ctx context.Context) {
 			}
 
 			if isReservedOrInvalidBucket(bucket, false) {
-				if false && d.debug {
+				if true && d.debug {
 					logger.Info(color.Green("data-usage:")+" isReservedOrInvalidBucket: %v, entry: %v", bucket, in)
 				}
 				continue

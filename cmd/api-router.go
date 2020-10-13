@@ -44,6 +44,12 @@ func newCachedObjectLayerFn() CacheObjectLayer {
 	return globalCacheObjectAPI
 }
 
+func setObjectLayer(o ObjectLayer) {
+	globalObjLayerMutex.Lock()
+	globalObjectAPI = o
+	globalObjLayerMutex.Unlock()
+}
+
 // objectAPIHandler implements and provides http handlers for S3 API.
 type objectAPIHandlers struct {
 	ObjectAPI func() ObjectLayer

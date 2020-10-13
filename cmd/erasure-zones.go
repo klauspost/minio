@@ -1194,6 +1194,7 @@ func (z *erasureZones) ListObjects(ctx context.Context, bucket, prefix, marker, 
 
 	merged, err := z.listPath(ctx, bucket, prefix, marker, delimiter, maxKeys)
 	if err != nil && err != io.EOF {
+		logger.LogIf(ctx, err)
 		return loi, err
 	}
 	// Default is recursive, if delimiter is set then list non recursive.
@@ -1348,6 +1349,7 @@ func (z *erasureZones) listPath(ctx context.Context, bucket, prefix, marker, del
 			all404 = false
 			continue
 		}
+		logger.LogIf(ctx, err)
 		return entries, err
 	}
 	if all404 {

@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"path"
 	"runtime/debug"
@@ -150,7 +151,8 @@ func newBucketMetacache(bucket string) *bucketMetacache {
 func loadBucketMetaCache(ctx context.Context, bucket string) (*bucketMetacache, error) {
 	objAPI := newObjectLayerFn()
 	if objAPI == nil {
-		return nil, errServerNotInitialized
+		logger.LogIf(ctx, fmt.Errorf("loadBucketMetaCache: requested bucket %s with no object layer", bucket))
+		return newBucketMetacache(bucket), errServerNotInitialized
 	}
 	var meta bucketMetacache
 	var decErr error
