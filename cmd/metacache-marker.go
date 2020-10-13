@@ -31,7 +31,7 @@ const markerTagVersion = "v1"
 // parseMarker will parse a marker possibly encoded with encodeMarker
 func parseMarker(s string) (marker, uuid string) {
 	if !strings.Contains(s, "[minio_cache:"+markerTagVersion) {
-		return marker, ""
+		return s, ""
 	}
 	start := strings.LastIndex(s, "[")
 	marker = s[:start]

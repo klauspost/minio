@@ -578,6 +578,7 @@ func testListObjects(obj ObjectLayer, instanceType string, t1 TestErrHandler) {
 	for i, testCase := range testCases {
 		testCase := testCase
 		t.Run(fmt.Sprintf("%s-Test%d", instanceType, i+1), func(t *testing.T) {
+			t.Log("ListObjects, bucket:", testCase.bucketName, "prefix:", testCase.prefix, "marker:", testCase.marker, "delimiter:", testCase.delimiter, "maxkeys:", testCase.maxKeys)
 			result, err := obj.ListObjects(context.Background(), testCase.bucketName,
 				testCase.prefix, testCase.marker, testCase.delimiter, int(testCase.maxKeys))
 			if err != nil && testCase.shouldPass {

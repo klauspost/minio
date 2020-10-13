@@ -1204,7 +1204,7 @@ func (z *erasureZones) ListObjects(ctx context.Context, bucket, prefix, marker, 
 
 	for _, entry := range entries {
 		objInfo := entry.ToObjectInfo(bucket, entry.Name)
-		if HasSuffix(objInfo.Name, SlashSeparator) && !recursive {
+		if !recursive && HasSuffix(objInfo.Name, SlashSeparator) {
 			loi.Prefixes = append(loi.Prefixes, objInfo.Name)
 			continue
 		}
@@ -1225,7 +1225,7 @@ func (z *erasureZones) listPath(ctx context.Context, bucket, prefix, marker, del
 	}
 
 	// Marker is set validate pre-condition.
-	if marker != "" {
+	if marker != "" && prefix != "" {
 		// Marker not common with prefix is not implemented. Send an empty response
 		if !HasPrefix(marker, prefix) {
 			return entries, io.EOF
@@ -1263,13 +1263,14 @@ func (z *erasureZones) listPath(ctx context.Context, bucket, prefix, marker, del
 	if listID == "" {
 		listID = mustGetUUID()
 	}
+
 	opts := listPathOptions{
 		ID:          listID,
 		Bucket:      bucket,
 		BaseDir:     baseDirFromPrefix(prefix),
 		Prefix:      prefix,
 		Marker:      marker,
-		Limit:       maxKeys + 1,
+		Limit:       maxKeys,
 		InclDeleted: true,
 		Recursive:   recursive,
 		Separator:   delimiter,
@@ -1302,6 +1303,7 @@ func (z *erasureZones) listPath(ctx context.Context, bucket, prefix, marker, del
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	var errs []error
+	allAtEOF := true
 	asked := 0
 	mu.Lock()
 	for _, zone := range z.zones {
@@ -1313,8 +1315,11 @@ func (z *erasureZones) listPath(ctx context.Context, bucket, prefix, marker, del
 				e, err := set.listPath(ctx, opts)
 				mu.Lock()
 				defer mu.Unlock()
+				if err == nil {
+					allAtEOF = false
+				}
 				errs[i] = err
-				entries.merge(e, maxKeys+1)
+				entries.merge(e, -1)
 
 				// Resolve non-trivial conflicts
 				entries.deduplicate(func(existing, other *metaCacheEntry) (replace bool) {
@@ -1331,13 +1336,16 @@ func (z *erasureZones) listPath(ctx context.Context, bucket, prefix, marker, del
 					}
 					return oFIV.ModTime.After(eFIV.ModTime)
 				})
+				if entries.len() > maxKeys {
+					allAtEOF = false
+					entries.truncate(maxKeys)
+				}
 			}(len(errs), set)
 			errs = append(errs, nil)
 		}
 	}
 	mu.Unlock()
 	wg.Wait()
-	allAtEOF := true
 	all404 := true
 	for _, err := range errs {
 		if err == nil {

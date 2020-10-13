@@ -104,7 +104,7 @@ func (o *listPathOptions) gatherResults(in <-chan metaCacheEntry) func() (metaCa
 				continue
 			}
 			//fmt.Println("gather got:", entry.name)
-			if o.Marker != "" && entry.name < o.Marker {
+			if o.Marker != "" && entry.name <= o.Marker {
 				//fmt.Println("pre marker")
 				continue
 			}
@@ -236,6 +236,16 @@ func (r *metacacheReader) filter(o listPathOptions) (entries metaCacheEntriesSor
 		err = r.forwardTo(o.Marker)
 		if err != nil {
 			return entries, err
+		}
+		next, err := r.peek()
+		if err != nil {
+			return entries, err
+		}
+		if next.name == o.Marker {
+			err := r.skip(1)
+			if err != nil {
+				return entries, err
+			}
 		}
 	}
 	// fmt.Println("forwarded to ", o.Prefix, "marker:", o.Marker, "sep:", o.Separator)
@@ -408,7 +418,7 @@ func (er *erasureObjects) streamMetadataParts(ctx context.Context, o listPathOpt
 // Will return io.EOF if continuing would not yield more results.
 func (er *erasureObjects) listPath(ctx context.Context, o listPathOptions) (entries metaCacheEntriesSorted, err error) {
 	startTime := time.Now()
-	fmt.Println("listPath bucket:", o.Bucket, "basedir:", o.BaseDir, "prefix:", o.Prefix)
+	fmt.Println("listPath bucket:", o.Bucket, "basedir:", o.BaseDir, "prefix:", o.Prefix, "marker:", o.Marker)
 	// See if we have the listing stored.
 	if !o.Create {
 		entries, err := er.streamMetadataParts(ctx, o)
@@ -439,7 +449,7 @@ func (er *erasureObjects) listPath(ctx context.Context, o listPathOptions) (entr
 			}
 		}
 	}()
-	fmt.Println("scanning bucket:", o.Bucket, "basedir:", o.BaseDir, "prefix:", o.Prefix)
+	fmt.Println("scanning bucket:", o.Bucket, "basedir:", o.BaseDir, "prefix:", o.Prefix, "marker:", o.Marker)
 
 	// Disconnect from call above, but cancel on exit.
 	ctx, cancel := context.WithCancel(GlobalContext)
