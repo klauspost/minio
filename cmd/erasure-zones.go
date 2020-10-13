@@ -933,21 +933,8 @@ func (z *erasureZones) ListObjectVersions(ctx context.Context, bucket, prefix, m
 	if err != nil && err != io.EOF {
 		return loi, err
 	}
-	loi.IsTruncated = err == nil
-	recursive := delimiter != slashSeparator
-	entries := merged.fileInfoVersions(bucket, delimiter)
-
-	for _, entry := range entries {
-		for _, version := range entry.Versions {
-			objInfo := version.ToObjectInfo(bucket, entry.Name)
-			if HasSuffix(objInfo.Name, SlashSeparator) && !recursive {
-				loi.Prefixes = append(loi.Prefixes, objInfo.Name)
-				continue
-			}
-			loi.Objects = append(loi.Objects, objInfo)
-		}
-	}
-	loi.IsTruncated = loi.IsTruncated && len(loi.Objects) > 0
+	loi.Objects, loi.Prefixes = merged.fileInfoVersions(bucket, prefix, delimiter)
+	loi.IsTruncated = err == nil && len(loi.Objects) > 0
 	if loi.IsTruncated {
 		loi.NextMarker = encodeMarker(loi.Objects[len(loi.Objects)-1].Name, merged.listID)
 	}
@@ -962,16 +949,8 @@ func (z *erasureZones) ListObjects(ctx context.Context, bucket, prefix, marker, 
 		return loi, err
 	}
 	// Default is recursive, if delimiter is set then list non recursive.
-	loi.IsTruncated = err == nil
-	var objects []FileInfo
-	objects, loi.Prefixes = merged.fileInfos(bucket, prefix, delimiter)
-
-	for _, entry := range objects {
-		objInfo := entry.ToObjectInfo(bucket, entry.Name)
-		loi.Objects = append(loi.Objects, objInfo)
-	}
-
-	loi.IsTruncated = loi.IsTruncated && len(loi.Objects) > 0
+	loi.Objects, loi.Prefixes = merged.fileInfos(bucket, prefix, delimiter)
+	loi.IsTruncated = err == nil && len(loi.Objects) > 0
 	if loi.IsTruncated {
 		loi.NextMarker = encodeMarker(loi.Objects[len(loi.Objects)-1].Name, merged.listID)
 	}

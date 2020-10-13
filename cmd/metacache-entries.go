@@ -256,30 +256,17 @@ func (m *metaCacheEntriesSorted) iterate(fn func(entry metaCacheEntry) (cont boo
 
 // fileInfoVersions converts the metadata to FileInfoVersions where possible.
 // Metadata that cannot be decoded is skipped.
-func (m *metaCacheEntriesSorted) fileInfoVersions(bucket, delimiter string) []FileInfoVersions {
-	dst := make([]FileInfoVersions, 0, m.len())
-	for _, entry := range m.o {
-		fiv, err := entry.fileInfoVersions(bucket, delimiter)
-		if err != nil {
-			continue
-		}
-		dst = append(dst, fiv)
-	}
-	return dst
-}
-
-// fileInfoVersions converts the metadata to FileInfoVersions where possible.
-// Metadata that cannot be decoded is skipped.
-func (m *metaCacheEntriesSorted) fileInfos(bucket, prefix, delimiter string) (objects []FileInfo, commonPrefixes []string) {
-	dst := make([]FileInfo, 0, m.len())
+func (m *metaCacheEntriesSorted) fileInfoVersions(bucket, prefix, delimiter string) (versions []ObjectInfo, commonPrefixes []string) {
+	versions = make([]ObjectInfo, 0, m.len())
 	prevPrefix := ""
 	for _, entry := range m.o {
 		if entry.isObject() {
-			fi, err := entry.fileInfo(bucket, delimiter)
-			if err != nil {
-				continue
+			fiv, err := entry.fileInfoVersions(bucket, delimiter)
+			if err == nil {
+				for _, version := range fiv.Versions {
+					versions = append(versions, version.ToObjectInfo(bucket, entry.name))
+				}
 			}
-			dst = append(dst, *fi)
 			continue
 		}
 		if entry.isDir() {
@@ -301,7 +288,42 @@ func (m *metaCacheEntriesSorted) fileInfos(bucket, prefix, delimiter string) (ob
 		}
 	}
 
-	return dst, commonPrefixes
+	return versions, commonPrefixes
+}
+
+// fileInfoVersions converts the metadata to FileInfoVersions where possible.
+// Metadata that cannot be decoded is skipped.
+func (m *metaCacheEntriesSorted) fileInfos(bucket, prefix, delimiter string) (objects []ObjectInfo, commonPrefixes []string) {
+	objects = make([]ObjectInfo, 0, m.len())
+	prevPrefix := ""
+	for _, entry := range m.o {
+		if entry.isObject() {
+			fi, err := entry.fileInfo(bucket, delimiter)
+			if err == nil {
+				objects = append(objects, fi.ToObjectInfo(bucket, entry.name))
+			}
+			continue
+		}
+		if entry.isDir() {
+			if delimiter == "" {
+				continue
+			}
+			idx := strings.Index(strings.TrimPrefix(entry.name, prefix), delimiter)
+			if idx < 0 {
+				continue
+			}
+			idx = len(prefix) + idx + len(delimiter)
+			currPrefix := entry.name[:idx]
+			if currPrefix == prevPrefix {
+				continue
+			}
+			prevPrefix = currPrefix
+			commonPrefixes = append(commonPrefixes, currPrefix)
+			continue
+		}
+	}
+
+	return objects, commonPrefixes
 }
 
 // forwardTo will truncate m so only entries that are s or after is in the list.
