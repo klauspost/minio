@@ -447,14 +447,16 @@ func (r *metacacheReader) forwardTo(s string) error {
 // or all if n < 0.
 // Will return io.EOF if end of stream is reached.
 // If requesting 0 objects nil error will always be returned regardless of at end of stream.
+// Use peek to determine if at end of stream.
 func (r *metacacheReader) readN(n int, inclDeleted bool, prefix string) (metaCacheEntriesSorted, error) {
 	r.checkInit()
-	if r.err != nil {
-		return metaCacheEntriesSorted{}, r.err
-	}
 	if n == 0 {
 		return metaCacheEntriesSorted{}, nil
 	}
+	if r.err != nil {
+		return metaCacheEntriesSorted{}, r.err
+	}
+
 	var res metaCacheEntries
 	if n > 0 {
 		res = make(metaCacheEntries, 0, n)

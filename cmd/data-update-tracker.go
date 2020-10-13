@@ -41,7 +41,7 @@ import (
 
 const (
 	// Estimate bloom filter size. With this many items
-	dataUpdateTrackerEstItems = 1000000
+	dataUpdateTrackerEstItems = 10000000
 	// ... we want this false positive rate:
 	dataUpdateTrackerFP        = 0.99
 	dataUpdateTrackerQueueSize = 10000
@@ -497,10 +497,7 @@ func (d *dataUpdateTracker) startCollector(ctx context.Context) {
 				continue
 			}
 			split := splitPathDeterministic(in)
-			if !strings.HasSuffix(in, "/") {
-				// Trim object name.
-				split = split[:len(split)-1]
-			}
+
 			// Add all paths until done.
 			d.mu.Lock()
 			for i := range split {

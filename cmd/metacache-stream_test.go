@@ -94,6 +94,8 @@ func Test_metacacheReader_readN(t *testing.T) {
 	if entries.len() != len(want) {
 		t.Fatal("unexpected length:", entries.len(), "want:", len(want))
 	}
+
+	// Reload.
 	r = loadMetacacheSample(t)
 	defer r.Close()
 	entries, err = r.readN(0, false, "")
