@@ -75,6 +75,9 @@ type listPathOptions struct {
 
 	// OldestCycle indicates the oldest cycle acceptable.
 	OldestCycle uint64
+
+	// Include pure directories.
+	IncludeDirectories bool
 }
 
 func init() {
@@ -100,7 +103,7 @@ func (o *listPathOptions) gatherResults(in <-chan metaCacheEntry) func() (metaCa
 				}
 				continue
 			}
-			if entry.isDir() {
+			if !o.IncludeDirectories && entry.isDir() {
 				continue
 			}
 			//fmt.Println("gather got:", entry.name)
@@ -259,12 +262,16 @@ func (r *metacacheReader) filter(o listPathOptions) (entries metaCacheEntriesSor
 				pastPrefix = true
 				return false
 			}
+			if !o.IncludeDirectories && entry.isDir() {
+				return true
+			}
+			if !entry.isInDir(o.Prefix, o.Separator) {
+				return true
+			}
 			if !o.InclDeleted && entry.isObject() && entry.isLatestDeletemarker() {
 				return entries.len() < o.Limit
 			}
-			if entry.isInDir(o.Prefix, o.Separator) {
-				entries.o = append(entries.o, entry)
-			}
+			entries.o = append(entries.o, entry)
 			return entries.len() < o.Limit
 		})
 		if err == io.EOF || pastPrefix {
