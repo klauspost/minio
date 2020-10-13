@@ -608,6 +608,10 @@ func testListObjects(obj ObjectLayer, instanceType string, t1 TestErrHandler) {
 					t.Errorf("Test %d: %s: Expected number of object in the result to be '%d', but found '%d' objects instead", i+1, instanceType, len(testCase.result.Objects), len(result.Objects))
 				}
 				for j := 0; j < len(testCase.result.Objects); j++ {
+					if j >= len(result.Objects) {
+						t.Errorf("Test %d: %s: Expected object name to be \"%s\", but not nothing instead", i+1, instanceType, testCase.result.Objects[j].Name)
+						continue
+					}
 					if testCase.result.Objects[j].Name != result.Objects[j].Name {
 						t.Errorf("Test %d: %s: Expected object name to be \"%s\", but found \"%s\" instead", i+1, instanceType, testCase.result.Objects[j].Name, result.Objects[j].Name)
 					}

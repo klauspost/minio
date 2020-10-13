@@ -448,7 +448,7 @@ func (r *metacacheReader) forwardTo(s string) error {
 // Will return io.EOF if end of stream is reached.
 // If requesting 0 objects nil error will always be returned regardless of at end of stream.
 // Use peek to determine if at end of stream.
-func (r *metacacheReader) readN(n int, inclDeleted bool, prefix string) (metaCacheEntriesSorted, error) {
+func (r *metacacheReader) readN(n int, inclDeleted, inclDirs bool, prefix string) (metaCacheEntriesSorted, error) {
 	r.checkInit()
 	if n == 0 {
 		return metaCacheEntriesSorted{}, nil
@@ -475,7 +475,7 @@ func (r *metacacheReader) readN(n int, inclDeleted bool, prefix string) (metaCac
 	}
 
 	if r.current.name != "" {
-		if (inclDeleted || !r.current.isLatestDeletemarker()) && r.current.hasPrefix(prefix) && !r.current.isDir() {
+		if (inclDeleted || !r.current.isLatestDeletemarker()) && r.current.hasPrefix(prefix) && (inclDirs || r.current.isObject()) {
 			res = append(res, r.current)
 		}
 		r.current.name = ""
@@ -514,6 +514,9 @@ func (r *metacacheReader) readN(n int, inclDeleted bool, prefix string) (metaCac
 			}
 			r.err = err
 			return metaCacheEntriesSorted{o: res}, err
+		}
+		if !inclDirs && meta.isDir() {
+			continue
 		}
 		if meta.isDir() && !inclDeleted && meta.isLatestDeletemarker() {
 			continue

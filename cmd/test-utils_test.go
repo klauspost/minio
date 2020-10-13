@@ -52,7 +52,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fatih/color"
 	"github.com/gorilla/mux"
 	"github.com/minio/minio-go/v7/pkg/s3utils"
 	"github.com/minio/minio-go/v7/pkg/signer"
@@ -89,7 +88,7 @@ func init() {
 	globalIsDistErasure = false
 
 	// Disable printing console messages during tests.
-	color.Output = ioutil.Discard
+	//color.Output = ioutil.Discard
 
 	// Set system resources to maximum.
 	setMaxResources()
@@ -97,7 +96,7 @@ func init() {
 	// Initialize globalConsoleSys system
 	globalConsoleSys = NewConsoleLogger(context.Background())
 
-	logger.Disable = true
+	logger.Disable = false
 
 	initHelp()
 
@@ -1871,10 +1870,13 @@ func ExecObjectLayerTest(t TestErrHandler, objTest objTestType) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	defer setObjectLayer(newObjectLayerFn())
+
 	objLayer, fsDir, err := prepareFS()
 	if err != nil {
 		t.Fatalf("Initialization of object layer failed for single node setup: %s", err)
 	}
+	setObjectLayer(objLayer)
 
 	newAllSubsystems()
 
@@ -1890,11 +1892,12 @@ func ExecObjectLayerTest(t TestErrHandler, objTest objTestType) {
 	objTest(objLayer, FSTestStr, t)
 
 	newAllSubsystems()
-
 	objLayer, fsDirs, err := prepareErasureSets32(ctx)
 	if err != nil {
 		t.Fatalf("Initialization of object layer failed for Erasure setup: %s", err)
 	}
+	setObjectLayer(objLayer)
+
 	defer objLayer.Shutdown(context.Background())
 
 	initAllSubsystems(ctx, objLayer)

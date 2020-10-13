@@ -44,7 +44,7 @@ func (e metaCacheEntry) isDir() bool {
 
 // isObject returns if the entry is representing an object.
 func (e metaCacheEntry) isObject() bool {
-	return len(e.metadata) >= 0
+	return len(e.metadata) > 0
 }
 
 // hasPrefix returns whether an entry has a specific prefix
@@ -270,16 +270,38 @@ func (m *metaCacheEntriesSorted) fileInfoVersions(bucket, delimiter string) []Fi
 
 // fileInfoVersions converts the metadata to FileInfoVersions where possible.
 // Metadata that cannot be decoded is skipped.
-func (m *metaCacheEntriesSorted) fileInfos(bucket, delimiter string) []FileInfo {
+func (m *metaCacheEntriesSorted) fileInfos(bucket, prefix, delimiter string) (objects []FileInfo, commonPrefixes []string) {
 	dst := make([]FileInfo, 0, m.len())
+	prevPrefix := ""
 	for _, entry := range m.o {
-		fi, err := entry.fileInfo(bucket, delimiter)
-		if err != nil {
+		if entry.isObject() {
+			fi, err := entry.fileInfo(bucket, delimiter)
+			if err != nil {
+				continue
+			}
+			dst = append(dst, *fi)
 			continue
 		}
-		dst = append(dst, *fi)
+		if entry.isDir() {
+			if delimiter == "" {
+				continue
+			}
+			idx := strings.Index(strings.TrimPrefix(entry.name, prefix), delimiter)
+			if idx < 0 {
+				continue
+			}
+			idx = len(prefix) + idx + len(delimiter)
+			currPrefix := entry.name[:idx]
+			if currPrefix == prevPrefix {
+				continue
+			}
+			prevPrefix = currPrefix
+			commonPrefixes = append(commonPrefixes, currPrefix)
+			continue
+		}
 	}
-	return dst
+
+	return dst, commonPrefixes
 }
 
 // forwardTo will truncate m so only entries that are s or after is in the list.

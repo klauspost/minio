@@ -32,7 +32,6 @@ import (
 	"github.com/minio/minio-go/v7/pkg/set"
 	"github.com/minio/minio-go/v7/pkg/tags"
 	"github.com/minio/minio/cmd/config/storageclass"
-	xhttp "github.com/minio/minio/cmd/http"
 	"github.com/minio/minio/cmd/logger"
 	"github.com/minio/minio/pkg/madmin"
 	"github.com/minio/minio/pkg/sync/errgroup"
@@ -674,233 +673,6 @@ func (z *erasureZones) ListObjectsV2(ctx context.Context, bucket, prefix, contin
 	return listObjectsV2Info, err
 }
 
-func (z *erasureZones) listObjectsNonSlash(ctx context.Context, bucket, prefix, marker, delimiter string, maxKeys int) (loi ListObjectsInfo, err error) {
-	// Should be removed.
-	if err := checkListObjsArgs(ctx, bucket, prefix, marker, z); err != nil {
-		return loi, err
-	}
-
-	// Marker is set validate pre-condition.
-	if marker != "" {
-		// Marker not common with prefix is not implemented. Send an empty response
-		if !HasPrefix(marker, prefix) {
-			return loi, nil
-		}
-	}
-
-	// With max keys of zero we have reached eof, return right here.
-	if maxKeys == 0 {
-		return loi, nil
-	}
-
-	// For delimiter and prefix as '/' we do not list anything at all
-	// since according to s3 spec we stop at the 'delimiter'
-	// along // with the prefix. On a flat namespace with 'prefix'
-	// as '/' we don't have any entries, since all the keys are
-	// of form 'keyName/...'
-	if delimiter == SlashSeparator && prefix == SlashSeparator {
-		return loi, nil
-	}
-
-	// Over flowing count - reset to maxObjectList.
-	if maxKeys < 0 || maxKeys > maxObjectList {
-		maxKeys = maxObjectList
-	}
-
-	zonesEntryChs := make([][]FileInfoCh, 0, len(z.zones))
-	zonesListTolerancePerSet := make([]int, 0, len(z.zones))
-
-	endWalkCh := make(chan struct{})
-	defer close(endWalkCh)
-
-	for _, zone := range z.zones {
-		zonesEntryChs = append(zonesEntryChs,
-			zone.startMergeWalksN(ctx, bucket, prefix, "", true, endWalkCh, zone.listTolerancePerSet, false))
-		if zone.listTolerancePerSet == -1 {
-			zonesListTolerancePerSet = append(zonesListTolerancePerSet, zone.setDriveCount/2)
-		} else {
-			zonesListTolerancePerSet = append(zonesListTolerancePerSet, zone.listTolerancePerSet-2)
-		}
-	}
-
-	var objInfos []ObjectInfo
-	var eof bool
-	var prevPrefix string
-
-	zonesEntriesInfos := make([][]FileInfo, 0, len(zonesEntryChs))
-	zonesEntriesValid := make([][]bool, 0, len(zonesEntryChs))
-	for _, entryChs := range zonesEntryChs {
-		zonesEntriesInfos = append(zonesEntriesInfos, make([]FileInfo, len(entryChs)))
-		zonesEntriesValid = append(zonesEntriesValid, make([]bool, len(entryChs)))
-	}
-
-	for {
-		if len(objInfos) == maxKeys {
-			break
-		}
-
-		result, quorumCount, zoneIndex, ok := lexicallySortedEntryZone(zonesEntryChs, zonesEntriesInfos, zonesEntriesValid)
-		if !ok {
-			eof = true
-			break
-		}
-
-		if quorumCount < zonesListTolerancePerSet[zoneIndex] {
-			// Skip entries which are not found on upto expected tolerance
-			continue
-		}
-
-		var objInfo ObjectInfo
-
-		index := strings.Index(strings.TrimPrefix(result.Name, prefix), delimiter)
-		if index == -1 {
-			objInfo = ObjectInfo{
-				IsDir:           false,
-				Bucket:          bucket,
-				Name:            result.Name,
-				ModTime:         result.ModTime,
-				Size:            result.Size,
-				ContentType:     result.Metadata["content-type"],
-				ContentEncoding: result.Metadata["content-encoding"],
-			}
-
-			// Extract etag from metadata.
-			objInfo.ETag = extractETag(result.Metadata)
-
-			// All the parts per object.
-			objInfo.Parts = result.Parts
-
-			// etag/md5Sum has already been extracted. We need to
-			// remove to avoid it from appearing as part of
-			// response headers. e.g, X-Minio-* or X-Amz-*.
-			objInfo.UserDefined = cleanMetadata(result.Metadata)
-
-			// Update storage class
-			if sc, ok := result.Metadata[xhttp.AmzStorageClass]; ok {
-				objInfo.StorageClass = sc
-			} else {
-				objInfo.StorageClass = globalMinioDefaultStorageClass
-			}
-		} else {
-			index = len(prefix) + index + len(delimiter)
-			currPrefix := result.Name[:index]
-			if currPrefix == prevPrefix {
-				continue
-			}
-			prevPrefix = currPrefix
-
-			objInfo = ObjectInfo{
-				Bucket: bucket,
-				Name:   currPrefix,
-				IsDir:  true,
-			}
-		}
-
-		if objInfo.Name <= marker {
-			continue
-		}
-
-		objInfos = append(objInfos, objInfo)
-	}
-
-	result := ListObjectsInfo{}
-	for _, objInfo := range objInfos {
-		if objInfo.IsDir {
-			result.Prefixes = append(result.Prefixes, objInfo.Name)
-			continue
-		}
-		result.Objects = append(result.Objects, objInfo)
-	}
-
-	if !eof {
-		result.IsTruncated = true
-		if len(objInfos) > 0 {
-			result.NextMarker = objInfos[len(objInfos)-1].Name
-		}
-	}
-
-	return result, nil
-}
-
-func (z *erasureZones) listObjectsSplunk(ctx context.Context, bucket, prefix, marker string, maxKeys int) (loi ListObjectsInfo, err error) {
-	if err := checkListObjsArgs(ctx, bucket, prefix, marker, z); err != nil {
-		return loi, err
-	}
-
-	// Marker is set validate pre-condition.
-	if marker != "" {
-		// Marker not common with prefix is not implemented. Send an empty response
-		if !HasPrefix(marker, prefix) {
-			return loi, nil
-		}
-	}
-
-	// With max keys of zero we have reached eof, return right here.
-	if maxKeys == 0 {
-		return loi, nil
-	}
-
-	// Over flowing count - reset to maxObjectList.
-	if maxKeys < 0 || maxKeys > maxObjectList {
-		maxKeys = maxObjectList
-	}
-
-	if strings.Contains(prefix, guidSplunk) {
-		logger.LogIf(ctx, NotImplemented{})
-		return loi, NotImplemented{}
-	}
-
-	recursive := true
-
-	zonesEntryChs := make([][]FileInfoCh, 0, len(z.zones))
-	zonesEndWalkCh := make([]chan struct{}, 0, len(z.zones))
-	zonesListTolerancePerSet := make([]int, 0, len(z.zones))
-
-	for _, zone := range z.zones {
-		entryChs, endWalkCh := zone.poolSplunk.Release(listParams{bucket, recursive, marker, prefix})
-		if entryChs == nil {
-			endWalkCh = make(chan struct{})
-			entryChs = zone.startMergeWalksN(ctx, bucket, prefix, marker, recursive, endWalkCh, zone.listTolerancePerSet, true)
-		}
-		zonesEntryChs = append(zonesEntryChs, entryChs)
-		zonesEndWalkCh = append(zonesEndWalkCh, endWalkCh)
-		if zone.listTolerancePerSet == -1 {
-			zonesListTolerancePerSet = append(zonesListTolerancePerSet, zone.setDriveCount/2)
-		} else {
-			zonesListTolerancePerSet = append(zonesListTolerancePerSet, zone.listTolerancePerSet-2)
-		}
-	}
-
-	entries := mergeZonesEntriesCh(zonesEntryChs, maxKeys, zonesListTolerancePerSet)
-	if len(entries.Files) == 0 {
-		return loi, nil
-	}
-
-	loi.IsTruncated = entries.IsTruncated
-	if loi.IsTruncated {
-		loi.NextMarker = entries.Files[len(entries.Files)-1].Name
-	}
-
-	for _, entry := range entries.Files {
-		objInfo := entry.ToObjectInfo(bucket, entry.Name)
-		splits := strings.Split(objInfo.Name, guidSplunk)
-		if len(splits) == 0 {
-			loi.Objects = append(loi.Objects, objInfo)
-			continue
-		}
-
-		loi.Prefixes = append(loi.Prefixes, splits[0]+guidSplunk)
-	}
-
-	if loi.IsTruncated {
-		for i, zone := range z.zones {
-			zone.poolSplunk.Set(listParams{bucket, recursive, loi.NextMarker, prefix}, zonesEntryChs[i],
-				zonesEndWalkCh[i])
-		}
-	}
-	return loi, nil
-}
-
 // Calculate least entry across zones and across multiple FileInfo
 // channels, returns the least common entry and the total number of times
 // we found this entry. Additionally also returns a boolean
@@ -1184,14 +956,6 @@ func (z *erasureZones) ListObjectVersions(ctx context.Context, bucket, prefix, m
 
 func (z *erasureZones) ListObjects(ctx context.Context, bucket, prefix, marker, delimiter string, maxKeys int) (ListObjectsInfo, error) {
 	var loi ListObjectsInfo
-	if delimiter != SlashSeparator && delimiter != "" {
-		// TODO: Remove these...
-		if delimiter == guidSplunk {
-			return z.listObjectsSplunk(ctx, bucket, prefix, marker, maxKeys)
-		}
-		return z.listObjectsNonSlash(ctx, bucket, prefix, marker, delimiter, maxKeys)
-	}
-
 	merged, err := z.listPath(ctx, bucket, prefix, marker, delimiter, maxKeys)
 	if err != nil && err != io.EOF {
 		logger.LogIf(ctx, err)
@@ -1199,17 +963,14 @@ func (z *erasureZones) ListObjects(ctx context.Context, bucket, prefix, marker, 
 	}
 	// Default is recursive, if delimiter is set then list non recursive.
 	loi.IsTruncated = err == nil
-	recursive := delimiter != slashSeparator
-	entries := merged.fileInfos(bucket, delimiter)
+	var objects []FileInfo
+	objects, loi.Prefixes = merged.fileInfos(bucket, prefix, delimiter)
 
-	for _, entry := range entries {
+	for _, entry := range objects {
 		objInfo := entry.ToObjectInfo(bucket, entry.Name)
-		if !recursive && HasSuffix(objInfo.Name, SlashSeparator) {
-			loi.Prefixes = append(loi.Prefixes, objInfo.Name)
-			continue
-		}
 		loi.Objects = append(loi.Objects, objInfo)
 	}
+
 	loi.IsTruncated = loi.IsTruncated && len(loi.Objects) > 0
 	if loi.IsTruncated {
 		loi.NextMarker = encodeMarker(loi.Objects[len(loi.Objects)-1].Name, merged.listID)
@@ -1253,6 +1014,7 @@ func (z *erasureZones) listPath(ctx context.Context, bucket, prefix, marker, del
 
 	// Default is recursive, if delimiter is set then list non recursive.
 	recursive := true
+	withDirs := delimiter == slashSeparator
 	if delimiter == slashSeparator || delimiter == "" {
 		recursive = delimiter != slashSeparator
 		delimiter = slashSeparator
@@ -1265,16 +1027,17 @@ func (z *erasureZones) listPath(ctx context.Context, bucket, prefix, marker, del
 	}
 
 	opts := listPathOptions{
-		ID:          listID,
-		Bucket:      bucket,
-		BaseDir:     baseDirFromPrefix(prefix),
-		Prefix:      prefix,
-		Marker:      marker,
-		Limit:       maxKeys,
-		InclDeleted: true,
-		Recursive:   recursive,
-		Separator:   delimiter,
-		Create:      createNew,
+		ID:                 listID,
+		Bucket:             bucket,
+		BaseDir:            baseDirFromPrefix(prefix),
+		Prefix:             prefix,
+		Marker:             marker,
+		Limit:              maxKeys,
+		IncludeDirectories: withDirs,
+		InclDeleted:        true,
+		Recursive:          recursive,
+		Separator:          delimiter,
+		Create:             createNew,
 	}
 	var cache metacache
 	if createNew {

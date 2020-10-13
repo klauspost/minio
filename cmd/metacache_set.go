@@ -281,7 +281,7 @@ func (r *metacacheReader) filter(o listPathOptions) (entries metaCacheEntriesSor
 	}
 
 	// We should not need to filter more.
-	return r.readN(o.Limit, o.InclDeleted, o.Prefix)
+	return r.readN(o.Limit, o.InclDeleted, o.IncludeDirectories, o.Prefix)
 }
 
 func (er *erasureObjects) streamMetadataParts(ctx context.Context, o listPathOptions) (entries metaCacheEntriesSorted, err error) {
