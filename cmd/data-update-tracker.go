@@ -174,13 +174,13 @@ func (d *dataUpdateTracker) latestWithDir(dir string) uint64 {
 	bucket, _ := path2BucketObjectWithBasePath("", dir)
 	if bucket == "" {
 		if d.debug && len(dir) > 0 {
-			logger.Info(color.Green("data-usage:")+" no bucket (%s)", dir)
+			logger.Info(color.Green("dataUpdateTracker:")+" no bucket (%s)", dir)
 		}
 		return d.current()
 	}
 	if isReservedOrInvalidBucket(bucket, false) {
 		if d.debug {
-			logger.Info(color.Green("data-usage:")+" isReservedOrInvalidBucket: %v, entry: %v", bucket, dir)
+			logger.Info(color.Green("dataUpdateTracker:")+" isReservedOrInvalidBucket: %v, entry: %v", bucket, dir)
 		}
 		return d.current()
 	}

@@ -408,6 +408,7 @@ func (b *bucketMetacache) updateCacheEntry(update metacache) (metacache, error) 
 	defer b.mu.Unlock()
 	existing, ok := b.caches[update.id]
 	if !ok {
+		logger.Info("updateCacheEntry: bucket %s list id %v not found", b.bucket, update.id)
 		return update, errFileNotFound
 	}
 

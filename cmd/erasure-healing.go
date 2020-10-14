@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path"
 	"sync"
 	"time"
 
@@ -304,6 +305,10 @@ func (er erasureObjects) healObject(ctx context.Context, bucket string, object s
 		})
 	}
 
+	if isAllNotFound(errs) {
+		return defaultHealResult(latestFileInfo, storageDisks, storageEndpoints, errs, bucket, object), nil
+	}
+
 	// If less than read quorum number of disks have all the parts
 	// of the data, we can't reconstruct the erasure-coded data.
 	if numAvailableDisks < dataBlocks {
@@ -523,6 +528,7 @@ func (er erasureObjects) healObjectDir(ctx context.Context, bucket, object strin
 				}(index, disk)
 			}
 			wg.Wait()
+			ObjectPathUpdated(path.Join(bucket, object))
 		}
 	}
 
@@ -545,7 +551,7 @@ func (er erasureObjects) healObjectDir(ctx context.Context, bucket, object strin
 			hr.After.Drives[i] = madmin.HealDriveInfo{Endpoint: drive, State: madmin.DriveStateCorrupt}
 		}
 	}
-	if dryRun || danglingObject {
+	if dryRun || danglingObject || isAllNotFound(errs) {
 		return hr, nil
 	}
 	for i, err := range errs {
@@ -650,9 +656,23 @@ func statAllDirs(ctx context.Context, storageDisks []StorageAPI, bucket, prefix 
 	return g.Wait()
 }
 
+// isAllNotFound will return if any element of the error slice is not
+// errFileNotFound, errFileVersionNotFound or errVolumeNotFound.
+// A 0 length slice will always return false.
+func isAllNotFound(errs []error) bool {
+	for _, err := range errs {
+		if errors.Is(err, errFileNotFound) || errors.Is(err, errVolumeNotFound) || errors.Is(err, errFileVersionNotFound) {
+			continue
+		}
+		return false
+	}
+	return len(errs) > 0
+}
+
 // ObjectDir is considered dangling/corrupted if any only
 // if total disks - a combination of corrupted and missing
 // files is lesser than N/2+1 number of disks.
+// If no files were found false will be returned.
 func isObjectDirDangling(errs []error) (ok bool) {
 	var found int
 	var notFound int
@@ -669,7 +689,8 @@ func isObjectDirDangling(errs []error) (ok bool) {
 			otherFound++
 		}
 	}
-	return found+foundNotEmpty+otherFound < notFound
+	found = found + foundNotEmpty + otherFound
+	return found < notFound && found > 0
 }
 
 // Object is considered dangling/corrupted if any only
@@ -748,6 +769,10 @@ func (er erasureObjects) HealObject(ctx context.Context, bucket, object, version
 	// Read metadata files from all the disks
 	partsMetadata, errs := readAllFileInfo(healCtx, storageDisks, bucket, object, versionID)
 
+	if isAllNotFound(errs) {
+		// Nothing to do
+		return defaultHealResult(FileInfo{}, storageDisks, storageEndpoints, errs, bucket, object), nil
+	}
 	// Check if the object is dangling, if yes and user requested
 	// remove we simply delete it from namespace.
 	if m, ok := isObjectDangling(partsMetadata, errs, []error{}); ok {
@@ -755,7 +780,7 @@ func (er erasureObjects) HealObject(ctx context.Context, bucket, object, version
 		if m.Erasure.DataBlocks == 0 {
 			writeQuorum = getWriteQuorum(len(storageDisks))
 		}
-		if !opts.DryRun && opts.Remove {
+		if !opts.DryRun {
 			if versionID == "" {
 				er.deleteObject(healCtx, bucket, object, writeQuorum)
 			} else {
