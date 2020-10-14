@@ -162,21 +162,8 @@ func (z *erasureZones) listPath(ctx context.Context, bucket, prefix, marker, del
 	}
 	mu.Unlock()
 	wg.Wait()
-	all404 := true
-	for _, err := range errs {
-		if err == nil {
-			allAtEOF = false
-			all404 = false
-			continue
-		}
-		if err == io.EOF {
-			all404 = false
-			continue
-		}
-		logger.LogIf(ctx, err)
-		return entries, err
-	}
-	if all404 {
+
+	if isAllNotFound(errs) {
 		// All sets returned not found.
 		// Update master cache with that information.
 		cache.status = scanStateSuccess
@@ -189,6 +176,18 @@ func (z *erasureZones) listPath(ctx context.Context, bucket, prefix, marker, del
 		}
 		logger.LogIf(ctx, err)
 		return entries, errFileNotFound
+	}
+
+	for _, err := range errs {
+		if err == nil {
+			allAtEOF = false
+			continue
+		}
+		if err == io.EOF {
+			continue
+		}
+		logger.LogIf(ctx, err)
+		return entries, err
 	}
 	truncated := entries.len() > maxKeys || !allAtEOF
 	entries.truncate(maxKeys)
