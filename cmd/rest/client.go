@@ -21,6 +21,7 @@ import (
 	"errors"
 	"io"
 	"io/ioutil"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"sync/atomic"
@@ -76,11 +77,10 @@ type Client struct {
 	// Should only be modified before any calls are made.
 	MaxErrResponseSize int64
 
-	httpClient          *http.Client
-	httpIdleConnsCloser func()
-	url                 *url.URL
-	newAuthToken        func(audience string) string
-	connected           int32
+	httpClient   *http.Client
+	url          *url.URL
+	newAuthToken func(audience string) string
+	connected    int32
 }
 
 // URL query separator constants
@@ -161,9 +161,6 @@ func (c *Client) Call(ctx context.Context, method string, values url.Values, bod
 // Close closes all idle connections of the underlying http client
 func (c *Client) Close() {
 	atomic.StoreInt32(&c.connected, closed)
-	if c.httpIdleConnsCloser != nil {
-		c.httpIdleConnsCloser()
-	}
 }
 
 // NewClient - returns new REST client.
@@ -173,7 +170,6 @@ func NewClient(url *url.URL, newCustomTransport func() *http.Transport, newAuthT
 	tr := newCustomTransport()
 	return &Client{
 		httpClient:          &http.Client{Transport: tr},
-		httpIdleConnsCloser: tr.CloseIdleConnections,
 		url:                 url,
 		newAuthToken:        newAuthToken,
 		connected:           online,
@@ -194,18 +190,18 @@ func (c *Client) MarkOffline() {
 	// Start goroutine that will attempt to reconnect.
 	// If server is already trying to reconnect this will have no effect.
 	if c.HealthCheckFn != nil && atomic.CompareAndSwapInt32(&c.connected, online, offline) {
-		go func(healthFunc func() bool) {
-			ticker := time.NewTicker(c.HealthCheckInterval)
-			defer ticker.Stop()
-			for range ticker.C {
+		r := rand.New(rand.NewSource(time.Now().UnixNano()))
+		go func() {
+			for {
 				if atomic.LoadInt32(&c.connected) == closed {
 					return
 				}
-				if healthFunc() {
+				if c.HealthCheckFn() {
 					atomic.CompareAndSwapInt32(&c.connected, offline, online)
 					return
 				}
+				time.Sleep(time.Duration(r.Float64() * float64(c.HealthCheckInterval)))
 			}
-		}(c.HealthCheckFn)
+		}()
 	}
 }

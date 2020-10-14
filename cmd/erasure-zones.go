@@ -33,6 +33,7 @@ import (
 	"github.com/minio/minio-go/v7/pkg/tags"
 	"github.com/minio/minio/cmd/config/storageclass"
 	"github.com/minio/minio/cmd/logger"
+	"github.com/minio/minio/pkg/dsync"
 	"github.com/minio/minio/pkg/madmin"
 	"github.com/minio/minio/pkg/sync/errgroup"
 )
@@ -90,6 +91,10 @@ func newErasureZones(ctx context.Context, endpointZones EndpointZones) (ObjectLa
 
 func (z *erasureZones) NewNSLock(ctx context.Context, bucket string, objects ...string) RWLocker {
 	return z.zones[0].NewNSLock(ctx, bucket, objects...)
+}
+
+func (z *erasureZones) GetAllLockers() []dsync.NetLocker {
+	return z.zones[0].GetAllLockers()
 }
 
 func (z *erasureZones) SetDriveCount() int {
@@ -405,24 +410,6 @@ func (z *erasureZones) CrawlAndGetDataUsage(ctx context.Context, bf *bloomFilter
 // even if one of the sets fail to create buckets, we proceed all the successful
 // operations.
 func (z *erasureZones) MakeBucketWithLocation(ctx context.Context, bucket string, opts BucketOptions) error {
-	if z.SingleZone() {
-		if err := z.zones[0].MakeBucketWithLocation(ctx, bucket, opts); err != nil {
-			return err
-		}
-
-		// If it doesn't exist we get a new, so ignore errors
-		meta := newBucketMetadata(bucket)
-		if opts.LockEnabled {
-			meta.VersioningConfigXML = enabledBucketVersioningConfig
-			meta.ObjectLockConfigXML = enabledBucketObjectLockConfig
-		}
-		if err := meta.Save(ctx, z); err != nil {
-			return toObjectErr(err, bucket)
-		}
-		globalBucketMetadataSys.Set(bucket, meta)
-		return nil
-	}
-
 	g := errgroup.WithNErrs(len(z.zones))
 
 	// Create buckets in parallel across all sets.

@@ -235,8 +235,9 @@ func replicateObject(ctx context.Context, objInfo ObjectInfo, objectAPI ObjectLa
 	replicationStatus := replication.Complete
 
 	// Setup bandwidth throttling
-	peerCount := len(globalEndpoints)
-	b := target.BandwidthLimit / int64(peerCount)
+	peers, _ := globalEndpoints.peers()
+	totalNodesCount := len(peers)
+	b := target.BandwidthLimit / int64(totalNodesCount)
 	var headerSize int
 	for k, v := range putOpts.Header() {
 		headerSize += len(k) + len(v)
