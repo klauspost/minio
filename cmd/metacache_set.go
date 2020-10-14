@@ -150,7 +150,7 @@ func (o *listPathOptions) findFirstPart(fi FileInfo) (int, error) {
 		return 0, nil
 	}
 	debugPrintln := func(a ...interface{}) (n int, err error) { return 0, nil }
-	if true {
+	if false {
 		debugPrintln = fmt.Println
 	}
 	debugPrintln("searching for ", search)
@@ -363,6 +363,8 @@ func (er *erasureObjects) streamMetadataParts(ctx context.Context, o listPathOpt
 						continue
 					}
 					retries++
+					time.Sleep(100 * time.Millisecond)
+					continue
 				default:
 					logger.LogIf(ctx, err)
 					return entries, err
@@ -379,7 +381,6 @@ func (er *erasureObjects) streamMetadataParts(ctx context.Context, o listPathOpt
 				if fi.Deleted {
 					return entries, io.ErrUnexpectedEOF
 				}
-
 			}
 			buf.Reset()
 			err := er.getObjectWithFileInfo(ctx, minioMetaBucket, o.objectPath(partN), 0, fi.Size, &buf, fi, metaArr, onlineDisks)
@@ -471,6 +472,7 @@ func (er *erasureObjects) listPath(ctx context.Context, o listPathOptions) (entr
 
 	const askDisks = 3
 	if len(disks) < askDisks {
+		logger.Info("listPath: Insufficient disks, %d of %d needed are available", len(disks), askDisks)
 		err = InsufficientReadQuorum{}
 		cancel()
 		return
