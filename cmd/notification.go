@@ -586,7 +586,6 @@ func (sys *NotificationSys) findEarliestCleanBloomFilter(ctx context.Context, di
 	// Load initial state from local...
 	current := intDataUpdateTracker.current()
 	best := intDataUpdateTracker.latestWithDir(dir)
-	fmt.Println("dir", dir, "best:", best, "current:", current)
 	if best == current {
 		// If the current is dirty no need to check others.
 		return current

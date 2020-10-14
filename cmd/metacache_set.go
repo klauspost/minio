@@ -31,6 +31,7 @@ import (
 	"github.com/minio/minio/cmd/config/storageclass"
 	xhttp "github.com/minio/minio/cmd/http"
 	"github.com/minio/minio/cmd/logger"
+	"github.com/minio/minio/pkg/console"
 	"github.com/minio/minio/pkg/hash"
 )
 
@@ -88,10 +89,12 @@ func init() {
 // Caller should close the channel when done.
 // The returned function will return the results once there is enough or input is closed.
 func (o *listPathOptions) gatherResults(in <-chan metaCacheEntry) func() (metaCacheEntriesSorted, error) {
+	const debugPrint = false
 	var resultsDone = make(chan metaCacheEntriesSorted)
 	// Copy so we can mutate
 	resCh := resultsDone
 	resErr := io.EOF
+
 	go func() {
 		var results metaCacheEntriesSorted
 		for entry := range in {
@@ -106,26 +109,38 @@ func (o *listPathOptions) gatherResults(in <-chan metaCacheEntry) func() (metaCa
 			if !o.IncludeDirectories && entry.isDir() {
 				continue
 			}
-			//fmt.Println("gather got:", entry.name)
+			if debugPrint {
+				console.Infoln("gather got:", entry.name)
+			}
 			if o.Marker != "" && entry.name <= o.Marker {
-				//fmt.Println("pre marker")
+				if debugPrint {
+					console.Infoln("pre marker")
+				}
 				continue
 			}
 			if !strings.HasPrefix(entry.name, o.Prefix) {
-				//fmt.Println("not in prefix")
+				if debugPrint {
+					console.Infoln("not in prefix")
+				}
 				continue
 			}
 			if !o.Recursive && !entry.isInDir(o.Prefix, o.Separator) {
-				//fmt.Println("not in dir", o.Prefix, o.Separator)
+				if debugPrint {
+					console.Infoln("not in dir", o.Prefix, o.Separator)
+				}
 				continue
 			}
 			if !o.InclDeleted && entry.isObject() {
 				if entry.isLatestDeletemarker() {
-					//fmt.Println("latest delete")
+					if debugPrint {
+						console.Infoln("latest delete")
+					}
 					continue
 				}
 			}
-			//fmt.Println("adding...")
+			if debugPrint {
+				console.Infoln("adding...")
+			}
 			results.o = append(results.o, entry)
 		}
 		if resCh != nil {
@@ -149,18 +164,19 @@ func (o *listPathOptions) findFirstPart(fi FileInfo) (int, error) {
 	if search == "" {
 		return 0, nil
 	}
-	debugPrintln := func(a ...interface{}) (n int, err error) { return 0, nil }
-	if false {
-		debugPrintln = fmt.Println
+	const debugPrint = false
+	if debugPrint {
+		console.Infoln("searching for ", search)
 	}
-	debugPrintln("searching for ", search)
 	var tmp metacacheBlock
 	i := 0
 	for {
 		partKey := fmt.Sprintf("%s-metacache-part-%d", ReservedMetadataPrefixLower, i)
 		v, ok := fi.Metadata[partKey]
 		if !ok {
-			debugPrintln("no match in metadata, waiting")
+			if debugPrint {
+				console.Infoln("no match in metadata, waiting")
+			}
 			return -1, io.ErrUnexpectedEOF
 		}
 		err := json.Unmarshal([]byte(v), &tmp)
@@ -172,18 +188,27 @@ func (o *listPathOptions) findFirstPart(fi FileInfo) (int, error) {
 			return 0, errFileNotFound
 		}
 		if tmp.First >= search {
-			debugPrintln("First >= search", v)
+			if debugPrint {
+				console.Infoln("First >= search", v)
+			}
 			return i, nil
 		}
 		if tmp.Last >= search {
-			debugPrintln("Last >= search", v)
+			if debugPrint {
+
+				console.Infoln("Last >= search", v)
+			}
 			return i, nil
 		}
 		if tmp.EOS {
-			debugPrintln("no match, at EOS", v)
+			if debugPrint {
+				console.Infoln("no match, at EOS", v)
+			}
 			return -3, io.EOF
 		}
-		debugPrintln("First ", tmp.First, "<", search, " search", i)
+		if debugPrint {
+			console.Infoln("First ", tmp.First, "<", search, " search", i)
+		}
 		i++
 	}
 }
@@ -230,6 +255,7 @@ func (o *listPathOptions) objectPath(block int) string {
 // Will return io.EOF if there are no more entries with the same filter.
 // The last entry can be used as a marker to resume the listing.
 func (r *metacacheReader) filter(o listPathOptions) (entries metaCacheEntriesSorted, err error) {
+	const debugPrint = false
 	// Forward to prefix, if any
 	err = r.forwardTo(o.Prefix)
 	if err != nil {
@@ -251,7 +277,9 @@ func (r *metacacheReader) filter(o listPathOptions) (entries metaCacheEntriesSor
 			}
 		}
 	}
-	// fmt.Println("forwarded to ", o.Prefix, "marker:", o.Marker, "sep:", o.Separator)
+	if debugPrint {
+		console.Infoln("forwarded to ", o.Prefix, "marker:", o.Marker, "sep:", o.Separator)
+	}
 	// Filter
 	if !o.Recursive {
 		entries.o = make(metaCacheEntries, 0, o.Limit)
@@ -286,6 +314,7 @@ func (r *metacacheReader) filter(o listPathOptions) (entries metaCacheEntriesSor
 
 func (er *erasureObjects) streamMetadataParts(ctx context.Context, o listPathOptions) (entries metaCacheEntriesSorted, err error) {
 	retries := 0
+	const debugPrint = false
 	for {
 		select {
 		case <-ctx.Done():
@@ -300,7 +329,9 @@ func (er *erasureObjects) streamMetadataParts(ctx context.Context, o listPathOpt
 				// Not ready yet...
 				if retries == 10 {
 					err := o.checkMetacacheState(ctx)
-					logger.Info("waiting for first part (%s), err: %v", o.objectPath(0), err)
+					if debugPrint {
+						logger.Info("waiting for first part (%s), err: %v", o.objectPath(0), err)
+					}
 					if err != nil {
 						return entries, err
 					}
@@ -311,8 +342,9 @@ func (er *erasureObjects) streamMetadataParts(ctx context.Context, o listPathOpt
 				time.Sleep(100 * time.Millisecond)
 				continue
 			}
-
-			//fmt.Println("first getObjectFileInfo", o.objectPath(0), "returned err:", err)
+			if debugPrint {
+				console.Infoln("first getObjectFileInfo", o.objectPath(0), "returned err:", err)
+			}
 			return entries, err
 		}
 		if fi.Deleted {
@@ -325,7 +357,9 @@ func (er *erasureObjects) streamMetadataParts(ctx context.Context, o listPathOpt
 		case io.ErrUnexpectedEOF:
 			if retries == 10 {
 				err := o.checkMetacacheState(ctx)
-				logger.Info("waiting for metadata, err: %v", err)
+				if debugPrint {
+					logger.Info("waiting for metadata, err: %v", err)
+				}
 				if err != nil {
 					return entries, err
 				}
@@ -355,7 +389,9 @@ func (er *erasureObjects) streamMetadataParts(ctx context.Context, o listPathOpt
 				case errFileNotFound:
 					if retries == 10 {
 						err := o.checkMetacacheState(ctx)
-						logger.Info("waiting for part data (%v), err: %v", o.objectPath(partN), err)
+						if debugPrint {
+							logger.Info("waiting for part data (%v), err: %v", o.objectPath(partN), err)
+						}
 						if err != nil {
 							return entries, err
 						}
@@ -426,7 +462,10 @@ func (er *erasureObjects) streamMetadataParts(ctx context.Context, o listPathOpt
 // Will return io.EOF if continuing would not yield more results.
 func (er *erasureObjects) listPath(ctx context.Context, o listPathOptions) (entries metaCacheEntriesSorted, err error) {
 	startTime := time.Now()
-	fmt.Println("listPath bucket:", o.Bucket, "basedir:", o.BaseDir, "prefix:", o.Prefix, "marker:", o.Marker)
+	const debugPrint = false
+	if debugPrint {
+		fmt.Println("listPath: bucket:", o.Bucket, "basedir:", o.BaseDir, "prefix:", o.Prefix, "marker:", o.Marker)
+	}
 	// See if we have the listing stored.
 	if !o.Create {
 		entries, err := er.streamMetadataParts(ctx, o)
@@ -457,23 +496,20 @@ func (er *erasureObjects) listPath(ctx context.Context, o listPathOptions) (entr
 			}
 		}
 	}()
-	fmt.Println("scanning bucket:", o.Bucket, "basedir:", o.BaseDir, "prefix:", o.Prefix, "marker:", o.Marker)
+	if debugPrint {
+		fmt.Println("listPath: scanning bucket:", o.Bucket, "basedir:", o.BaseDir, "prefix:", o.Prefix, "marker:", o.Marker)
+	}
 
 	// Disconnect from call above, but cancel on exit.
 	ctx, cancel := context.WithCancel(GlobalContext)
 	// We need to ask disks.
-	var disks []StorageAPI
-	for _, d := range er.getLoadBalancedDisks(true) {
-		if d == nil || !d.IsOnline() {
-			logger.Info("offline disk returned", d)
-			continue
-		}
-		disks = append(disks, d)
-	}
+	disks := er.getLoadBalancedDisks(true)
 
 	const askDisks = 3
 	if len(disks) < askDisks {
-		logger.Info("listPath: Insufficient disks, %d of %d needed are available", len(disks), askDisks)
+		if debugPrint {
+			logger.Info("listPath: Insufficient disks, %d of %d needed are available", len(disks), askDisks)
+		}
 		err = InsufficientReadQuorum{}
 		cancel()
 		return
@@ -546,7 +582,9 @@ func (er *erasureObjects) listPath(ctx context.Context, o listPathOptions) (entr
 
 		// Write results to disk.
 		bw := newMetacacheBlockWriter(cacheCh, func(b *metacacheBlock) error {
-			//fmt.Println("SAVING BLOCK", b.n, "to", o.objectPath(b.n))
+			if debugPrint {
+				fmt.Println("listPath: saving block", b.n, "to", o.objectPath(b.n))
+			}
 			r, err := hash.NewReader(bytes.NewBuffer(b.data), int64(len(b.data)), "", "", int64(len(b.data)), false)
 			logger.LogIf(ctx, err)
 			custom := b.headerKV()

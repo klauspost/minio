@@ -790,7 +790,6 @@ func newMetacacheBlockWriter(in <-chan metaCacheEntry, nextBlock func(b *metacac
 			}
 			current.Last = o.name
 		}
-		fmt.Println("stream writer exited input", n, "streamErr:", w.streamErr)
 		if n > 0 || current.n == 0 {
 			current.EOS = true
 			finishBlock()

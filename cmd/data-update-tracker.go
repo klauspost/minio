@@ -22,7 +22,6 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"io"
 	"io/ioutil"
 	"os"
@@ -180,7 +179,7 @@ func (d *dataUpdateTracker) latestWithDir(dir string) uint64 {
 		return d.current()
 	}
 	if isReservedOrInvalidBucket(bucket, false) {
-		if false && d.debug {
+		if d.debug {
 			logger.Info(color.Green("data-usage:")+" isReservedOrInvalidBucket: %v, entry: %v", bucket, dir)
 		}
 		return d.current()
@@ -189,10 +188,11 @@ func (d *dataUpdateTracker) latestWithDir(dir string) uint64 {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.Current.bf.containsDir(dir) {
-		fmt.Println("current bloom contains dir", dir)
 		return d.Current.idx
 	}
-	fmt.Println("current bloom does NOT contains dir", dir)
+	if d.debug {
+		logger.Info("current bloom does NOT contains dir %s", dir)
+	}
 
 	idx := d.Current.idx - 1
 	for {
@@ -482,19 +482,21 @@ func (d *dataUpdateTracker) startCollector(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case in := <-d.input:
-			logger.Info(color.Green("data-usage:")+" got (%s)", in)
+			if d.debug {
+				logger.Info(color.Green("dataUpdateTracker:")+" got (%s)", in)
+			}
 
 			bucket, _ := path2BucketObjectWithBasePath("", in)
 			if bucket == "" {
 				if d.debug && len(in) > 0 {
-					logger.Info(color.Green("data-usage:")+" no bucket (%s)", in)
+					logger.Info(color.Green("dataUpdateTracker:")+" no bucket (%s)", in)
 				}
 				continue
 			}
 
 			if isReservedOrInvalidBucket(bucket, false) {
-				if true && d.debug {
-					logger.Info(color.Green("data-usage:")+" isReservedOrInvalidBucket: %v, entry: %v", bucket, in)
+				if d.debug {
+					logger.Info(color.Green("dataUpdateTracker:")+" isReservedOrInvalidBucket: %v, entry: %v", bucket, in)
 				}
 				continue
 			}
@@ -503,7 +505,7 @@ func (d *dataUpdateTracker) startCollector(ctx context.Context) {
 			// Add all paths until done.
 			d.mu.Lock()
 			for i := range split {
-				if d.debug || true {
+				if d.debug {
 					logger.Info(color.Green("dataUpdateTracker:") + " Marking path dirty: " + color.Blue(path.Join(split[:i+1]...)))
 				}
 				d.Current.bf.AddString(hashPath(path.Join(split[:i+1]...)).String())
