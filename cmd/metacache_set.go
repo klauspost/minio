@@ -507,9 +507,7 @@ func (er *erasureObjects) listPath(ctx context.Context, o listPathOptions) (entr
 
 	const askDisks = 3
 	if len(disks) < askDisks {
-		if debugPrint {
-			logger.Info("listPath: Insufficient disks, %d of %d needed are available", len(disks), askDisks)
-		}
+		logger.LogIf(ctx, fmt.Errorf("listPath: Insufficient disks, %d of %d needed are available\n", len(disks), askDisks))
 		err = InsufficientReadQuorum{}
 		cancel()
 		return
