@@ -465,6 +465,7 @@ func (er *erasureObjects) listPath(ctx context.Context, o listPathOptions) (entr
 	var disks []StorageAPI
 	for _, d := range er.getLoadBalancedDisks(true) {
 		if d == nil || !d.IsOnline() {
+			logger.Info("offline disk returned", d)
 			continue
 		}
 		disks = append(disks, d)

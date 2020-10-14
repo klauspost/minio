@@ -67,14 +67,14 @@ func (er erasureObjects) getLoadBalancedDisks(optimized bool) []StorageAPI {
 
 	var wg sync.WaitGroup
 	var mu sync.Mutex
-	var newDisks = map[uint64][]StorageAPI{}
+	var newDisks []StorageAPI
 	// Based on the random shuffling return back randomized disks.
 	for _, i := range hashOrder(UTCNow().String(), len(disks)) {
 		i := i
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if disks[i-1] == nil {
+			if disks[i-1] == nil || !disks[i-1].IsOnline() {
 				return
 			}
 			di, err := disks[i-1].DiskInfo(context.Background())
@@ -90,21 +90,14 @@ func (er erasureObjects) getLoadBalancedDisks(optimized bool) []StorageAPI {
 
 			mu.Lock()
 			// Capture disks usage wise
-			newDisks[di.Used] = append(newDisks[di.Used], disks[i-1])
+			newDisks = append(newDisks, disks[i-1])
 			mu.Unlock()
 		}()
 	}
 	wg.Wait()
 
-	var max uint64
-	for k := range newDisks {
-		if k > max {
-			max = k
-		}
-	}
-
 	// Return disks which have maximum disk usage common.
-	return newDisks[max]
+	return newDisks
 }
 
 // This function does the following check, suppose
