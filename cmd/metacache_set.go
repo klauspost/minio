@@ -503,7 +503,7 @@ func (er *erasureObjects) listPath(ctx context.Context, o listPathOptions) (entr
 	// Disconnect from call above, but cancel on exit.
 	ctx, cancel := context.WithCancel(GlobalContext)
 	// We need to ask disks.
-	disks := er.getLoadBalancedDisks(true)
+	disks := er.getOnlineDisks()
 
 	const askDisks = 3
 	if len(disks) < askDisks {

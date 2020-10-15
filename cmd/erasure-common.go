@@ -37,6 +37,37 @@ func (er erasureObjects) getLoadBalancedLocalDisks() (newDisks []StorageAPI) {
 	return newDisks
 }
 
+func (er erasureObjects) getOnlineDisks() (newDisks []StorageAPI) {
+	disks := er.getDisks()
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	for _, i := range hashOrder(UTCNow().String(), len(disks)) {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if disks[i-1] == nil {
+				return
+			}
+			di, err := disks[i-1].DiskInfo(context.Background())
+			if err != nil || di.Healing {
+				// - Do not consume disks which are not reachable
+				//   unformatted or simply not accessible for some reason.
+				//
+				// - Do not consume disks which are being healed
+				//
+				// - Future: skip busy disks
+				return
+			}
+
+			mu.Lock()
+			newDisks = append(newDisks, disks[i-1])
+			mu.Unlock()
+		}()
+	}
+	return newDisks
+}
+
 // getLoadBalancedNDisks - fetches load balanced (sufficiently randomized) disk slice
 // with N disks online. If ndisks is zero or negative, then it will returns all disks,
 // same if ndisks is greater than the number of all disks.
@@ -67,14 +98,14 @@ func (er erasureObjects) getLoadBalancedDisks(optimized bool) []StorageAPI {
 
 	var wg sync.WaitGroup
 	var mu sync.Mutex
-	var newDisks []StorageAPI
+	var newDisks = map[uint64][]StorageAPI{}
 	// Based on the random shuffling return back randomized disks.
 	for _, i := range hashOrder(UTCNow().String(), len(disks)) {
 		i := i
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if disks[i-1] == nil || !disks[i-1].IsOnline() {
+			if disks[i-1] == nil {
 				return
 			}
 			di, err := disks[i-1].DiskInfo(context.Background())
@@ -89,15 +120,22 @@ func (er erasureObjects) getLoadBalancedDisks(optimized bool) []StorageAPI {
 			}
 
 			mu.Lock()
-			// Capture disks usage wise
-			newDisks = append(newDisks, disks[i-1])
+			// Capture disks usage wise upto resolution of MiB
+			newDisks[di.Used/1024/1024] = append(newDisks[di.Used/1024/1024], disks[i-1])
 			mu.Unlock()
 		}()
 	}
 	wg.Wait()
 
+	var max uint64
+	for k := range newDisks {
+		if k > max {
+			max = k
+		}
+	}
+
 	// Return disks which have maximum disk usage common.
-	return newDisks
+	return newDisks[max]
 }
 
 // This function does the following check, suppose
