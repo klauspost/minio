@@ -464,7 +464,7 @@ func (er *erasureObjects) listPath(ctx context.Context, o listPathOptions) (entr
 	startTime := time.Now()
 	const debugPrint = false
 	if debugPrint {
-		fmt.Println("listPath: bucket:", o.Bucket, "basedir:", o.BaseDir, "prefix:", o.Prefix, "marker:", o.Marker)
+		console.Println("listPath: bucket:", o.Bucket, "basedir:", o.BaseDir, "prefix:", o.Prefix, "marker:", o.Marker)
 	}
 	// See if we have the listing stored.
 	if !o.Create {
@@ -482,6 +482,9 @@ func (er *erasureObjects) listPath(ctx context.Context, o listPathOptions) (entr
 	var metaMu sync.Mutex
 	defer func() {
 		if err != nil {
+			if debugPrint {
+				console.Println("listPath returning:", entries.len(), "err:", err)
+			}
 			metaMu.Lock()
 			if meta.status != scanStateError {
 				meta.error = err.Error()
@@ -497,7 +500,7 @@ func (er *erasureObjects) listPath(ctx context.Context, o listPathOptions) (entr
 		}
 	}()
 	if debugPrint {
-		fmt.Println("listPath: scanning bucket:", o.Bucket, "basedir:", o.BaseDir, "prefix:", o.Prefix, "marker:", o.Marker)
+		console.Println("listPath: scanning bucket:", o.Bucket, "basedir:", o.BaseDir, "prefix:", o.Prefix, "marker:", o.Marker)
 	}
 
 	// Disconnect from call above, but cancel on exit.
@@ -507,8 +510,11 @@ func (er *erasureObjects) listPath(ctx context.Context, o listPathOptions) (entr
 
 	const askDisks = 3
 	if len(disks) < askDisks {
-		logger.LogIf(ctx, fmt.Errorf("listPath: Insufficient disks, %d of %d needed are available\n", len(disks), askDisks))
 		err = InsufficientReadQuorum{}
+		if debugPrint {
+			console.Errorf("listPath: Insufficient disks, %d of %d needed are available", len(disks), askDisks)
+		}
+		logger.LogIf(ctx, fmt.Errorf("listPath: Insufficient disks, %d of %d needed are available", len(disks), askDisks))
 		cancel()
 		return
 	}
