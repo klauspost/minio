@@ -638,7 +638,10 @@ func testListObjects(obj ObjectLayer, instanceType string, t1 TestErrHandler) {
 				}
 
 				if testCase.result.IsTruncated != result.IsTruncated {
-					t.Errorf("Test %d: %s: Expected IsTruncated flag to be %v, but instead found it to be %v", i+1, instanceType, testCase.result.IsTruncated, result.IsTruncated)
+					// Allow an extra continuation token.
+					if !result.IsTruncated || len(result.Objects) == 0 {
+						t.Errorf("Test %d: %s: Expected IsTruncated flag to be %v, but instead found it to be %v", i+1, instanceType, testCase.result.IsTruncated, result.IsTruncated)
+					}
 				}
 
 				if testCase.result.IsTruncated && result.NextMarker == "" {
@@ -646,16 +649,21 @@ func testListObjects(obj ObjectLayer, instanceType string, t1 TestErrHandler) {
 				}
 
 				if !testCase.result.IsTruncated && result.NextMarker != "" {
-					t.Errorf("Test %d: %s: Expected NextContinuationToken to be empty since listing is not truncated, but instead found `%v`", i+1, instanceType, result.NextMarker)
+					if !result.IsTruncated || len(result.Objects) == 0 {
+						t.Errorf("Test %d: %s: Expected NextContinuationToken to be empty since listing is not truncated, but instead found `%v`", i+1, instanceType, result.NextMarker)
+					}
 				}
 
 			}
 			// Take ListObject treeWalk go-routine to completion, if available in the treewalk pool.
-			if result.IsTruncated {
-				_, err = obj.ListObjects(context.Background(), testCase.bucketName,
+			for result.IsTruncated {
+				result, err = obj.ListObjects(context.Background(), testCase.bucketName,
 					testCase.prefix, result.NextMarker, testCase.delimiter, 1000)
 				if err != nil {
 					t.Fatal(err)
+				}
+				if !testCase.result.IsTruncated && len(result.Objects) > 0 {
+					t.Errorf("expected to get all objects in the previous call, but got %d more", len(result.Objects))
 				}
 			}
 		})
@@ -1278,13 +1286,13 @@ func testListObjectVersions(obj ObjectLayer, instanceType string, t1 TestErrHand
 				}
 
 				if testCase.result.IsTruncated && result.NextMarker == "" {
-					if !result.IsTruncated || len(result.Objects) == 0 {
-						t.Errorf("%s: Expected NextContinuationToken to contain a string since listing is truncated, but instead found it to be empty", instanceType)
-					}
+					t.Errorf("%s: Expected NextContinuationToken to contain a string since listing is truncated, but instead found it to be empty", instanceType)
 				}
 
 				if !testCase.result.IsTruncated && result.NextMarker != "" {
-					t.Errorf("%s: Expected NextContinuationToken to be empty since listing is not truncated, but instead found `%v`", instanceType, result.NextMarker)
+					if !result.IsTruncated || len(result.Objects) == 0 {
+						t.Errorf("%s: Expected NextContinuationToken to be empty since listing is not truncated, but instead found `%v`", instanceType, result.NextMarker)
+					}
 				}
 
 			}
