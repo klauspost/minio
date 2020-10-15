@@ -1183,7 +1183,7 @@ func (z *erasureZones) deleteAll(ctx context.Context, bucket, prefix string) err
 				wg.Add(1)
 				go func(disk StorageAPI) {
 					defer wg.Done()
-					logger.LogIf(ctx, disk.DeleteFile(ctx, bucket, prefix, true))
+					logger.LogIf(ctx, disk.Delete(ctx, bucket, prefix, true))
 				}(disk)
 			}
 		}

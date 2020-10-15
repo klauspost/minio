@@ -234,11 +234,11 @@ func (d *naughtyDisk) CheckFile(ctx context.Context, volume string, path string)
 	return d.disk.CheckFile(ctx, volume, path)
 }
 
-func (d *naughtyDisk) DeleteFile(ctx context.Context, volume string, path string, recursive bool) (err error) {
+func (d *naughtyDisk) Delete(ctx context.Context, volume string, path string, recursive bool) (err error) {
 	if err := d.calcError(); err != nil {
 		return err
 	}
-	return d.disk.DeleteFile(ctx, volume, path, recursive)
+	return d.disk.Delete(ctx, volume, path, recursive)
 }
 
 func (d *naughtyDisk) DeleteVersions(ctx context.Context, volume string, versions []FileInfo) []error {

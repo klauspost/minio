@@ -1146,7 +1146,7 @@ func (s *xlStorage) DeleteVersions(ctx context.Context, volume string, versions 
 // DeleteVersion - deletes FileInfo metadata for path at `xl.meta`
 func (s *xlStorage) DeleteVersion(ctx context.Context, volume, path string, fi FileInfo) error {
 	if HasSuffix(path, SlashSeparator) {
-		return s.DeleteFile(ctx, volume, path, false)
+		return s.Delete(ctx, volume, path, false)
 	}
 
 	buf, err := s.ReadAll(ctx, volume, pathJoin(path, xlStorageFormatFile))
@@ -1963,7 +1963,7 @@ func deleteFile(basePath, deletePath string, recursive bool) error {
 }
 
 // DeleteFile - delete a file at path.
-func (s *xlStorage) DeleteFile(ctx context.Context, volume string, path string, recursive bool) (err error) {
+func (s *xlStorage) Delete(ctx context.Context, volume string, path string, recursive bool) (err error) {
 	atomic.AddInt32(&s.activeIOCount, 1)
 	defer func() {
 		atomic.AddInt32(&s.activeIOCount, -1)

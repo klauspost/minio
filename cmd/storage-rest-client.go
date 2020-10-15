@@ -554,7 +554,7 @@ func (client *storageRESTClient) ListDir(ctx context.Context, volume, dirPath st
 }
 
 // DeleteFile - deletes a file.
-func (client *storageRESTClient) DeleteFile(ctx context.Context, volume string, path string, recursive bool) error {
+func (client *storageRESTClient) Delete(ctx context.Context, volume string, path string, recursive bool) error {
 	values := make(url.Values)
 	values.Set(storageRESTVolume, volume)
 	values.Set(storageRESTFilePath, path)
