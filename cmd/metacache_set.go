@@ -99,12 +99,8 @@ func (o *listPathOptions) gatherResults(in <-chan metaCacheEntry) func() (metaCa
 	go func() {
 		var results metaCacheEntriesSorted
 		for entry := range in {
-			if o.Limit > 0 && results.len() > o.Limit {
-				if resCh != nil {
-					resErr = nil
-					resCh <- results
-					resCh = nil
-				}
+			if resCh == nil {
+				// past limit
 				continue
 			}
 			if !o.IncludeDirectories && entry.isDir() {
@@ -138,6 +134,16 @@ func (o *listPathOptions) gatherResults(in <-chan metaCacheEntry) func() (metaCa
 					}
 					continue
 				}
+			}
+			if o.Limit > 0 && results.len() >= o.Limit {
+				// We have enough and we have more.
+				// Do not return io.EOF
+				if resCh != nil {
+					resErr = nil
+					resCh <- results
+					resCh = nil
+				}
+				continue
 			}
 			if debugPrint {
 				console.Infoln("adding...")
@@ -303,7 +309,7 @@ func (r *metacacheReader) filter(o listPathOptions) (entries metaCacheEntriesSor
 			entries.o = append(entries.o, entry)
 			return entries.len() < o.Limit
 		})
-		if err == io.EOF || pastPrefix {
+		if err == io.EOF || pastPrefix || r.nextEOF() {
 			return entries, io.EOF
 		}
 		return entries, err

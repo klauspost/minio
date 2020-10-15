@@ -378,6 +378,24 @@ func (r *metacacheReader) next() (metaCacheEntry, error) {
 	return m, err
 }
 
+// next will read one entry from the stream.
+// Generally not recommended for fast operation.
+func (r *metacacheReader) nextEOF() bool {
+	r.checkInit()
+	if r.err != nil {
+		return r.err == io.EOF
+	}
+	if r.current.name != "" {
+		return false
+	}
+	_, err := r.peek()
+	if err != nil {
+		r.err = err
+		return r.err == io.EOF
+	}
+	return false
+}
+
 // forwardTo will forward to the first entry that is >= s.
 // Will return io.EOF if end of stream is reached without finding any.
 func (r *metacacheReader) forwardTo(s string) error {
