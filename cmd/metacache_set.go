@@ -481,10 +481,10 @@ func (er *erasureObjects) listPath(ctx context.Context, o listPathOptions) (entr
 	meta := o.newMetacache()
 	var metaMu sync.Mutex
 	defer func() {
+		if debugPrint {
+			console.Println("listPath returning:", entries.len(), "err:", err)
+		}
 		if err != nil {
-			if debugPrint {
-				console.Println("listPath returning:", entries.len(), "err:", err)
-			}
 			metaMu.Lock()
 			if meta.status != scanStateError {
 				meta.error = err.Error()

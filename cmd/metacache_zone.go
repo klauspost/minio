@@ -18,6 +18,7 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"path"
 	"sync"
@@ -162,7 +163,7 @@ func (z *erasureZones) listPath(ctx context.Context, bucket, prefix, marker, del
 	}
 	mu.Unlock()
 	wg.Wait()
-
+	fmt.Println("listPath zones got errors:", errs)
 	if isAllNotFound(errs) {
 		// All sets returned not found.
 		// Update master cache with that information.

@@ -75,6 +75,9 @@ func (er erasureObjects) getOnlineDisks() (newDisks []StorageAPI) {
 		}()
 	}
 	wg.Wait()
+	if printDebug {
+		fmt.Println("getOnlineDisks: returning", len(newDisks), "of", len(disks))
+	}
 	return newDisks
 }
 
