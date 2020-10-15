@@ -169,6 +169,7 @@ func (e InsufficientReadQuorum) Error() string {
 	return "Storage resources are insufficient for the read operation."
 }
 
+// Unwrap the error.
 func (e InsufficientReadQuorum) Unwrap() error {
 	return errErasureReadQuorum
 }
@@ -180,6 +181,7 @@ func (e InsufficientWriteQuorum) Error() string {
 	return "Storage resources are insufficient for the write operation."
 }
 
+// Unwrap the error.
 func (e InsufficientWriteQuorum) Unwrap() error {
 	return errErasureWriteQuorum
 }
