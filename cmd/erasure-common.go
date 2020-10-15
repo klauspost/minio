@@ -39,7 +39,7 @@ func (er erasureObjects) getLoadBalancedLocalDisks() (newDisks []StorageAPI) {
 }
 
 func (er erasureObjects) getOnlineDisks() (newDisks []StorageAPI) {
-	const printDebug = true
+	const printDebug = false
 	disks := er.getDisks()
 	var wg sync.WaitGroup
 	var mu sync.Mutex

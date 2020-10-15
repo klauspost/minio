@@ -18,7 +18,6 @@ package cmd
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"path"
 	"sync"
@@ -143,11 +142,11 @@ func (z *erasureZones) listPath(ctx context.Context, bucket, prefix, marker, del
 					if existing.isDir() {
 						return false
 					}
-					eFIV, err := existing.fileInfo(bucket, delimiter)
+					eFIV, err := existing.fileInfo(bucket)
 					if err != nil {
 						return true
 					}
-					oFIV, err := existing.fileInfo(bucket, delimiter)
+					oFIV, err := existing.fileInfo(bucket)
 					if err != nil {
 						return false
 					}
@@ -163,7 +162,7 @@ func (z *erasureZones) listPath(ctx context.Context, bucket, prefix, marker, del
 	}
 	mu.Unlock()
 	wg.Wait()
-	fmt.Println("listPath zones got errors:", errs)
+
 	if isAllNotFound(errs) {
 		// All sets returned not found.
 		// Update master cache with that information.

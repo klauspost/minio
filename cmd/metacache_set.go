@@ -324,6 +324,7 @@ func (er *erasureObjects) streamMetadataParts(ctx context.Context, o listPathOpt
 		}
 
 		// Load first part metadata...
+		// All operations are performed without locks, so we must be careful and allow for failures.
 		fi, metaArr, onlineDisks, err := er.getObjectFileInfo(ctx, minioMetaBucket, o.objectPath(0), ObjectOptions{})
 		if err != nil {
 			if err == errFileNotFound || errors.Is(err, errErasureReadQuorum) || errors.Is(err, InsufficientReadQuorum{}) {
@@ -463,9 +464,9 @@ func (er *erasureObjects) streamMetadataParts(ctx context.Context, o listPathOpt
 // Will return io.EOF if continuing would not yield more results.
 func (er *erasureObjects) listPath(ctx context.Context, o listPathOptions) (entries metaCacheEntriesSorted, err error) {
 	startTime := time.Now()
-	const debugPrint = true
+	const debugPrint = false
 	if debugPrint {
-		console.Println("listPath: bucket:", o.Bucket, "basedir:", o.BaseDir, "prefix:", o.Prefix, "marker:", o.Marker)
+		console.Printf("listPath with options: %#v", o)
 	}
 	// See if we have the listing stored.
 	if !o.Create {
@@ -568,9 +569,9 @@ func (er *erasureObjects) listPath(ctx context.Context, o listPathOptions) (entr
 					exit = true
 				}
 				metaMu.Lock()
+				meta.endedCycle = intDataUpdateTracker.current()
 				lm := meta
 				metaMu.Unlock()
-				meta.endedCycle = intDataUpdateTracker.current()
 				var err error
 				if rpcClient == nil {
 					lm, err = localMetacacheMgr.getBucket(GlobalContext, o.Bucket).updateCacheEntry(lm)

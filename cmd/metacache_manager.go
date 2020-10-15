@@ -111,7 +111,7 @@ func (m *metacacheManager) getBucket(ctx context.Context, bucket string) *bucket
 }
 
 // checkMetacacheState should be used if data is not updating.
-// Should only be called if
+// Should only be called if a failure occurred.
 func (o listPathOptions) checkMetacacheState(ctx context.Context) error {
 	// We operate on a copy...
 	o.Create = false

@@ -86,9 +86,9 @@ func (e *metaCacheEntry) isLatestDeletemarker() bool {
 }
 
 // fileInfo returns the decoded metadata.
+// If entry is a directory it is returned as that.
 // If versioned the latest version will be returned.
-func (e *metaCacheEntry) fileInfo(bucket, delimiter string) (*FileInfo, error) {
-	// TODO: Handle delimiter...
+func (e *metaCacheEntry) fileInfo(bucket string) (*FileInfo, error) {
 	if e.isDir() {
 		return &FileInfo{
 			Volume: bucket,
@@ -107,8 +107,8 @@ func (e *metaCacheEntry) fileInfo(bucket, delimiter string) (*FileInfo, error) {
 }
 
 // fileInfoVersions returns the metadata as FileInfoVersions.
-func (e *metaCacheEntry) fileInfoVersions(bucket, delimiter string) (FileInfoVersions, error) {
-	// TODO: Handle delimiter...
+// If entry is a directory it is returned as that.
+func (e *metaCacheEntry) fileInfoVersions(bucket string) (FileInfoVersions, error) {
 	if e.isDir() {
 		return FileInfoVersions{
 			Volume: bucket,
@@ -183,7 +183,7 @@ func (m metaCacheEntries) resolve(r *metadataResolutionParams) (selected *metaCa
 		}
 
 		// Get new entry metadata
-		fiv, err := entry.fileInfo(r.bucket, slashSeparator)
+		fiv, err := entry.fileInfo(r.bucket)
 		if err != nil {
 			continue
 		}
@@ -243,6 +243,8 @@ func (m metaCacheEntriesSorted) shallowClone() metaCacheEntriesSorted {
 	return m
 }
 
+// iterate the entries in order.
+// If the iterator function returns iterating stops.
 func (m *metaCacheEntriesSorted) iterate(fn func(entry metaCacheEntry) (cont bool)) {
 	if m == nil {
 		return
@@ -261,7 +263,7 @@ func (m *metaCacheEntriesSorted) fileInfoVersions(bucket, prefix, delimiter stri
 	prevPrefix := ""
 	for _, entry := range m.o {
 		if entry.isObject() {
-			fiv, err := entry.fileInfoVersions(bucket, delimiter)
+			fiv, err := entry.fileInfoVersions(bucket)
 			if err == nil {
 				for _, version := range fiv.Versions {
 					versions = append(versions, version.ToObjectInfo(bucket, entry.name))
@@ -298,7 +300,7 @@ func (m *metaCacheEntriesSorted) fileInfos(bucket, prefix, delimiter string) (ob
 	prevPrefix := ""
 	for _, entry := range m.o {
 		if entry.isObject() {
-			fi, err := entry.fileInfo(bucket, delimiter)
+			fi, err := entry.fileInfo(bucket)
 			if err == nil {
 				objects = append(objects, fi.ToObjectInfo(bucket, entry.name))
 			}

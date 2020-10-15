@@ -48,10 +48,9 @@ type StorageAPI interface {
 	StatVol(ctx context.Context, volume string) (vol VolInfo, err error)
 	DeleteVol(ctx context.Context, volume string, forceDelete bool) (err error)
 
-	// WalkDir will walk a directory on disk and return a metacache stream.
+	// WalkDir will walk a directory on disk and return a metacache stream on wr.
 	WalkDir(ctx context.Context, opts WalkDirOptions, wr io.Writer) error
 
-	// TODO: REMOVE?
 	// WalkVersions in sorted order directly on disk.
 	WalkVersions(ctx context.Context, volume, dirPath, marker string, recursive bool, endWalkCh <-chan struct{}) (chan FileInfoVersions, error)
 	// Walk in sorted order directly on disk.
