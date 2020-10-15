@@ -315,7 +315,7 @@ func (r *metacacheReader) filter(o listPathOptions) (entries metaCacheEntriesSor
 
 func (er *erasureObjects) streamMetadataParts(ctx context.Context, o listPathOptions) (entries metaCacheEntriesSorted, err error) {
 	retries := 0
-	const debugPrint = false
+	const debugPrint = true
 	for {
 		select {
 		case <-ctx.Done():
@@ -326,7 +326,7 @@ func (er *erasureObjects) streamMetadataParts(ctx context.Context, o listPathOpt
 		// Load first part metadata...
 		fi, metaArr, onlineDisks, err := er.getObjectFileInfo(ctx, minioMetaBucket, o.objectPath(0), ObjectOptions{})
 		if err != nil {
-			if err == errFileNotFound || errors.Is(err, errErasureReadQuorum) {
+			if err == errFileNotFound || errors.Is(err, errErasureReadQuorum) || errors.Is(err, InsufficientReadQuorum{}) {
 				// Not ready yet...
 				if retries == 10 {
 					err := o.checkMetacacheState(ctx)
@@ -355,7 +355,7 @@ func (er *erasureObjects) streamMetadataParts(ctx context.Context, o listPathOpt
 		partN, err := o.findFirstPart(fi)
 		switch err {
 		case nil:
-		case io.ErrUnexpectedEOF, errErasureReadQuorum:
+		case io.ErrUnexpectedEOF, errErasureReadQuorum, InsufficientReadQuorum{}:
 			if retries == 10 {
 				err := o.checkMetacacheState(ctx)
 				if debugPrint {
@@ -387,7 +387,7 @@ func (er *erasureObjects) streamMetadataParts(ctx context.Context, o listPathOpt
 				// Load first part metadata...
 				fi, metaArr, onlineDisks, err = er.getObjectFileInfo(ctx, minioMetaBucket, o.objectPath(partN), ObjectOptions{})
 				switch err {
-				case errFileNotFound, errErasureReadQuorum:
+				case errFileNotFound, errErasureReadQuorum, InsufficientReadQuorum{}:
 					if retries == 10 {
 						err := o.checkMetacacheState(ctx)
 						if debugPrint {
