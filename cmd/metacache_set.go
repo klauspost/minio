@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/gob"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -325,7 +326,7 @@ func (er *erasureObjects) streamMetadataParts(ctx context.Context, o listPathOpt
 		// Load first part metadata...
 		fi, metaArr, onlineDisks, err := er.getObjectFileInfo(ctx, minioMetaBucket, o.objectPath(0), ObjectOptions{})
 		if err != nil {
-			if err == errFileNotFound {
+			if err == errFileNotFound || errors.Is(err, errErasureReadQuorum) {
 				// Not ready yet...
 				if retries == 10 {
 					err := o.checkMetacacheState(ctx)
@@ -354,7 +355,7 @@ func (er *erasureObjects) streamMetadataParts(ctx context.Context, o listPathOpt
 		partN, err := o.findFirstPart(fi)
 		switch err {
 		case nil:
-		case io.ErrUnexpectedEOF:
+		case io.ErrUnexpectedEOF, errErasureReadQuorum:
 			if retries == 10 {
 				err := o.checkMetacacheState(ctx)
 				if debugPrint {
@@ -386,7 +387,7 @@ func (er *erasureObjects) streamMetadataParts(ctx context.Context, o listPathOpt
 				// Load first part metadata...
 				fi, metaArr, onlineDisks, err = er.getObjectFileInfo(ctx, minioMetaBucket, o.objectPath(partN), ObjectOptions{})
 				switch err {
-				case errFileNotFound:
+				case errFileNotFound, errErasureReadQuorum:
 					if retries == 10 {
 						err := o.checkMetacacheState(ctx)
 						if debugPrint {
