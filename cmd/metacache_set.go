@@ -462,7 +462,7 @@ func (er *erasureObjects) streamMetadataParts(ctx context.Context, o listPathOpt
 // Will return io.EOF if continuing would not yield more results.
 func (er *erasureObjects) listPath(ctx context.Context, o listPathOptions) (entries metaCacheEntriesSorted, err error) {
 	startTime := time.Now()
-	const debugPrint = false
+	const debugPrint = true
 	if debugPrint {
 		console.Println("listPath: bucket:", o.Bucket, "basedir:", o.BaseDir, "prefix:", o.Prefix, "marker:", o.Marker)
 	}

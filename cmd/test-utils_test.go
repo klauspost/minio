@@ -52,8 +52,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fatih/color"
-
 	"github.com/gorilla/mux"
 	"github.com/minio/minio-go/v7/pkg/s3utils"
 	"github.com/minio/minio-go/v7/pkg/signer"
@@ -90,7 +88,7 @@ func init() {
 	globalIsDistErasure = false
 
 	// Disable printing console messages during tests.
-	color.Output = ioutil.Discard
+	// color.Output = ioutil.Discard
 
 	// Set system resources to maximum.
 	setMaxResources()
