@@ -780,7 +780,7 @@ func (er erasureObjects) HealObject(ctx context.Context, bucket, object, version
 		if m.Erasure.DataBlocks == 0 {
 			writeQuorum = getWriteQuorum(len(storageDisks))
 		}
-		if !opts.DryRun {
+		if !opts.DryRun && opts.Remove {
 			if versionID == "" {
 				er.deleteObject(healCtx, bucket, object, writeQuorum)
 			} else {

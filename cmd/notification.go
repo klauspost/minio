@@ -509,8 +509,7 @@ func (sys *NotificationSys) updateBloomFilter(ctx context.Context, current uint6
 	return bf, nil
 }
 
-// updateBloomFilter will cycle all servers to the current index and
-// return a merged bloom filter if a complete one can be retrieved.
+// collectBloomFilter will collect bloom filters from all servers from the specified cycle.
 func (sys *NotificationSys) collectBloomFilter(ctx context.Context, from uint64) (*bloomFilter, error) {
 	var req = bloomFilterRequest{
 		Current: 0,
@@ -579,8 +578,9 @@ func (sys *NotificationSys) collectBloomFilter(ctx context.Context, from uint64)
 	return bf, nil
 }
 
-// updateBloomFilter will cycle all servers to the current index and
-// return a merged bloom filter if a complete one can be retrieved.
+// findEarliestCleanBloomFilter will find the earliest bloom filter across the cluster
+// where the directory is clean.
+// Due to how objects are stored this can include object names.
 func (sys *NotificationSys) findEarliestCleanBloomFilter(ctx context.Context, dir string) uint64 {
 
 	// Load initial state from local...

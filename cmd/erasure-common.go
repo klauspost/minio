@@ -18,7 +18,6 @@ package cmd
 
 import (
 	"context"
-	"fmt"
 	"path"
 	"sync"
 
@@ -39,7 +38,6 @@ func (er erasureObjects) getLoadBalancedLocalDisks() (newDisks []StorageAPI) {
 }
 
 func (er erasureObjects) getOnlineDisks() (newDisks []StorageAPI) {
-	const printDebug = false
 	disks := er.getDisks()
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -49,16 +47,10 @@ func (er erasureObjects) getOnlineDisks() (newDisks []StorageAPI) {
 		go func() {
 			defer wg.Done()
 			if disks[i-1] == nil {
-				if printDebug {
-					fmt.Println("getOnlineDisks: disk ", i-1, "was nil")
-				}
 				return
 			}
 			di, err := disks[i-1].DiskInfo(context.Background())
 			if err != nil || di.Healing {
-				if printDebug {
-					fmt.Println("getOnlineDisks: disk ", i-1, "returned", di, err)
-				}
 
 				// - Do not consume disks which are not reachable
 				//   unformatted or simply not accessible for some reason.
@@ -75,9 +67,6 @@ func (er erasureObjects) getOnlineDisks() (newDisks []StorageAPI) {
 		}()
 	}
 	wg.Wait()
-	if printDebug {
-		fmt.Println("getOnlineDisks: returning", len(newDisks), "of", len(disks))
-	}
 	return newDisks
 }
 

@@ -17,7 +17,7 @@
 package cmd
 
 const (
-	storageRESTVersion       = "v21" // Add dir listing.
+	storageRESTVersion       = "v21" // Add dir listing and recursive delete operation.
 	storageRESTVersionPrefix = SlashSeparator + storageRESTVersion
 	storageRESTPrefix        = minioReservedBucketPath + "/storage"
 )
