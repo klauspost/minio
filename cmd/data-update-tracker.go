@@ -187,7 +187,7 @@ func (d *dataUpdateTracker) latestWithDir(dir string) uint64 {
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.Current.bf.containsDir(dir) {
+	if d.Current.bf.containsDir(dir) || d.Current.idx == 0 {
 		return d.Current.idx
 	}
 	if d.debug {
@@ -197,7 +197,7 @@ func (d *dataUpdateTracker) latestWithDir(dir string) uint64 {
 	idx := d.Current.idx - 1
 	for {
 		f := d.History.find(idx)
-		if f == nil || f.bf.containsDir(dir) {
+		if f == nil || f.bf.containsDir(dir) || idx == 0 {
 			break
 		}
 		idx--
