@@ -1058,7 +1058,7 @@ func (er erasureObjects) updateObjectMeta(ctx context.Context, bucket, object st
 		return toObjectErr(errMethodNotAllowed, bucket, object)
 	}
 
-	for i, fi := range metaArr {
+	for i := range metaArr {
 		if errs[i] != nil {
 			// Avoid disks where loading metadata fail
 			continue
