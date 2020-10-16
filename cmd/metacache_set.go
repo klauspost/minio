@@ -321,7 +321,7 @@ func (r *metacacheReader) filter(o listPathOptions) (entries metaCacheEntriesSor
 
 func (er *erasureObjects) streamMetadataParts(ctx context.Context, o listPathOptions) (entries metaCacheEntriesSorted, err error) {
 	retries := 0
-	const debugPrint = true
+	const debugPrint = false
 	for {
 		select {
 		case <-ctx.Done():
@@ -395,7 +395,7 @@ func (er *erasureObjects) streamMetadataParts(ctx context.Context, o listPathOpt
 				fi, metaArr, onlineDisks, err = er.getObjectFileInfo(ctx, minioMetaBucket, o.objectPath(partN), ObjectOptions{})
 				switch err {
 				case errFileNotFound, errErasureReadQuorum, InsufficientReadQuorum{}:
-					if retries == 10 {
+					if retries >= 10 {
 						err := o.checkMetacacheState(ctx)
 						if debugPrint {
 							logger.Info("waiting for part data (%v), err: %v", o.objectPath(partN), err)
@@ -406,12 +406,17 @@ func (er *erasureObjects) streamMetadataParts(ctx context.Context, o listPathOpt
 						retries = 0
 						continue
 					}
-					retries++
 					time.Sleep(100 * time.Millisecond)
 					continue
 				default:
-					logger.LogIf(ctx, err)
-					return entries, err
+					time.Sleep(100 * time.Millisecond)
+					if retries >= 20 {
+						// We had at least 10 retries without getting a result.
+						logger.LogIf(ctx, err)
+						return entries, err
+					}
+					retries++
+					continue
 				case nil:
 					loadedPart = partN
 					bi, err := getMetacacheBlockInfo(fi, partN)
