@@ -52,6 +52,29 @@ func (e metaCacheEntry) hasPrefix(s string) bool {
 	return strings.HasPrefix(e.name, s)
 }
 
+// likelyMatches returns if the entries match by comparing name and metadata length.
+func (e *metaCacheEntry) likelyMatches(other *metaCacheEntry) bool {
+	// This should reject 99%
+	if len(e.metadata) != len(other.metadata) || e.name != other.name {
+		return false
+	}
+	return true
+}
+
+// matches returns if the entries match by comparing their latest version fileinfo.
+func (e *metaCacheEntry) matches(other *metaCacheEntry, bucket string) bool {
+	// This should reject 99%
+	if len(e.metadata) != len(other.metadata) || e.name != other.name {
+		return false
+	}
+	eFi, eErr := e.fileInfo(bucket)
+	oFi, oErr := e.fileInfo(bucket)
+	if eErr != nil || oErr != nil {
+		return eErr == oErr
+	}
+	return eFi.ModTime.Equal(oFi.ModTime) && eFi.Size == oFi.Size && eFi.VersionID == oFi.VersionID
+}
+
 // isInDir returns whether the entry is in the dir when considering the separator.
 func (e metaCacheEntry) isInDir(dir, separator string) bool {
 	if len(dir) == 0 {
@@ -489,14 +512,16 @@ func (m *metaCacheEntriesSorted) deduplicate(compareMeta func(existing, other *m
 			if existing.name != obj.name {
 				break
 			}
-			if bytes.Equal(obj.metadata, existing.metadata) {
-				found = true
-				break
-			}
+
+			// Use given resolution function first if any.
 			if compareMeta != nil {
 				if compareMeta(existing, obj) {
 					dst[i] = *obj
 				}
+				found = true
+				break
+			}
+			if obj.likelyMatches(existing) {
 				found = true
 				break
 			}

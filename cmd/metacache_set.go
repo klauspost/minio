@@ -658,13 +658,22 @@ func (er *erasureObjects) listPath(ctx context.Context, o listPathOptions) (entr
 					metaMu.Unlock()
 					return
 				}
-				if entry.name == current.name || current.name == "" {
+				// If no current, add it.
+				if current.name == "" {
 					topEntries[i] = entry
-					if current.name == "" || bytes.Equal(current.metadata, entry.metadata) {
-						agree++
-						continue
-					}
 					current = entry
+					agree++
+					continue
+				}
+				// If exact match, we agree.
+				if current.matches(&entry, o.Bucket) {
+					topEntries[i] = entry
+					agree++
+					continue
+				}
+				// If only the name matches we didn't agree, but add it for resolution.
+				if entry.name == current.name {
+					topEntries[i] = entry
 					continue
 				}
 				// We got different entries
@@ -672,6 +681,7 @@ func (er *erasureObjects) listPath(ctx context.Context, o listPathOptions) (entr
 					continue
 				}
 				// We got a new, better current.
+				// Clear existing entries.
 				for i := range topEntries[:i] {
 					topEntries[i] = metaCacheEntry{}
 				}
