@@ -28,7 +28,7 @@ import (
 // listPath will return the requested entries.
 // If no more entries are in the listing io.EOF is returned,
 // otherwise nil or an unexpected error is returned.
-func (z *erasureZones) listPath(ctx context.Context, bucket, prefix, marker, delimiter string, maxKeys int) (entries metaCacheEntriesSorted, err error) {
+func (z *erasureServerSets) listPath(ctx context.Context, bucket, prefix, marker, delimiter string, maxKeys int) (entries metaCacheEntriesSorted, err error) {
 	if err := checkListObjsArgs(ctx, bucket, prefix, marker, z); err != nil {
 		return entries, err
 	}
@@ -122,7 +122,7 @@ func (z *erasureZones) listPath(ctx context.Context, bucket, prefix, marker, del
 	asked := 0
 	mu.Lock()
 	// Ask all sets and merge entries.
-	for _, zone := range z.zones {
+	for _, zone := range z.serverSets {
 		for _, set := range zone.sets {
 			wg.Add(1)
 			asked++

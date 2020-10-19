@@ -862,7 +862,7 @@ func (client *peerRESTClient) ConsoleLog(logCh chan interface{}, doneCh <-chan s
 // The two slices will point to the same clients,
 // but 'all' will contain nil entry for local client.
 // The 'all' slice will be in the same order across the cluster.
-func newPeerRestClients(endpoints EndpointZones) (remote, all []*peerRESTClient) {
+func newPeerRestClients(endpoints EndpointServerSets) (remote, all []*peerRESTClient) {
 	hosts := endpoints.hostsSorted()
 	remote = make([]*peerRESTClient, 0, len(hosts))
 	all = make([]*peerRESTClient, len(hosts))

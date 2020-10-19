@@ -188,7 +188,7 @@ var (
 	// registered listeners
 	globalConsoleSys *HTTPConsoleLoggerSys
 
-	globalEndpoints EndpointZones
+	globalEndpoints EndpointServerSets
 
 	// Global server's network statistics
 	globalConnStats = newConnStats()
@@ -274,6 +274,8 @@ var (
 	globalFSOSync bool
 
 	globalProxyEndpoints []ProxyEndpoint
+
+	globalDNSCache *xhttp.DNSCache
 	// Add new variable global values here.
 )
 

@@ -1317,7 +1317,7 @@ func (sys *NotificationSys) restClientFromHash(s string) (client *peerRESTClient
 }
 
 // NewNotificationSys - creates new notification system object.
-func NewNotificationSys(endpoints EndpointZones) *NotificationSys {
+func NewNotificationSys(endpoints EndpointServerSets) *NotificationSys {
 	// targetList/bucketRulesMap/bucketRemoteTargetRulesMap are populated by NotificationSys.Init()
 	remote, all := newPeerRestClients(endpoints)
 	return &NotificationSys{
@@ -1422,14 +1422,14 @@ func sendEvent(args eventArgs) {
 func (sys *NotificationSys) GetBandwidthReports(ctx context.Context, buckets ...string) bandwidth.Report {
 	reports := make([]*bandwidth.Report, len(sys.peerClients))
 	g := errgroup.WithNErrs(len(sys.peerClients))
-	for index, peer := range sys.peerClients {
-		if peer == nil {
+	for index := range sys.peerClients {
+		if sys.peerClients[index] == nil {
 			continue
 		}
 		index := index
 		g.Go(func() error {
 			var err error
-			reports[index], err = peer.MonitorBandwidth(ctx, buckets)
+			reports[index], err = sys.peerClients[index].MonitorBandwidth(ctx, buckets)
 			return err
 		}, index)
 	}
@@ -1453,6 +1453,9 @@ func (sys *NotificationSys) GetBandwidthReports(ctx context.Context, buckets ...
 			if !ok {
 				consolidatedReport.BucketStats[bucket] = bandwidth.Details{}
 				d = consolidatedReport.BucketStats[bucket]
+				d.LimitInBytesPerSecond = report.BucketStats[bucket].LimitInBytesPerSecond
+			}
+			if d.LimitInBytesPerSecond < report.BucketStats[bucket].LimitInBytesPerSecond {
 				d.LimitInBytesPerSecond = report.BucketStats[bucket].LimitInBytesPerSecond
 			}
 			d.CurrentBandwidthInBytesPerSecond += report.BucketStats[bucket].CurrentBandwidthInBytesPerSecond

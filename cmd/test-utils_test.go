@@ -57,6 +57,7 @@ import (
 	"github.com/minio/minio-go/v7/pkg/signer"
 	"github.com/minio/minio/cmd/config"
 	"github.com/minio/minio/cmd/crypto"
+	xhttp "github.com/minio/minio/cmd/http"
 	"github.com/minio/minio/cmd/logger"
 	"github.com/minio/minio/pkg/auth"
 	"github.com/minio/minio/pkg/bucket/policy"
@@ -97,6 +98,8 @@ func init() {
 	globalConsoleSys = NewConsoleLogger(context.Background())
 
 	logger.Disable = false
+
+	globalDNSCache = xhttp.NewDNSCache(3*time.Second, 10*time.Second)
 
 	initHelp()
 
@@ -285,7 +288,7 @@ func isSameType(obj1, obj2 interface{}) bool {
 //   defer s.Stop()
 type TestServer struct {
 	Root      string
-	Disks     EndpointZones
+	Disks     EndpointServerSets
 	AccessKey string
 	SecretKey string
 	Server    *httptest.Server
@@ -402,7 +405,7 @@ func resetGlobalConfig() {
 }
 
 func resetGlobalEndpoints() {
-	globalEndpoints = EndpointZones{}
+	globalEndpoints = EndpointServerSets{}
 }
 
 func resetGlobalIsErasure() {
@@ -1545,14 +1548,14 @@ func getRandomDisks(N int) ([]string, error) {
 }
 
 // Initialize object layer with the supplied disks, objectLayer is nil upon any error.
-func newTestObjectLayer(ctx context.Context, endpointZones EndpointZones) (newObject ObjectLayer, err error) {
+func newTestObjectLayer(ctx context.Context, endpointServerSets EndpointServerSets) (newObject ObjectLayer, err error) {
 	// For FS only, directly use the disk.
-	if endpointZones.NEndpoints() == 1 {
+	if endpointServerSets.NEndpoints() == 1 {
 		// Initialize new FS object layer.
-		return NewFSObjectLayer(endpointZones[0].Endpoints[0].Path)
+		return NewFSObjectLayer(endpointServerSets[0].Endpoints[0].Path)
 	}
 
-	z, err := newErasureZones(ctx, endpointZones)
+	z, err := newErasureServerSets(ctx, endpointServerSets)
 	if err != nil {
 		return nil, err
 	}
@@ -1565,16 +1568,16 @@ func newTestObjectLayer(ctx context.Context, endpointZones EndpointZones) (newOb
 }
 
 // initObjectLayer - Instantiates object layer and returns it.
-func initObjectLayer(ctx context.Context, endpointZones EndpointZones) (ObjectLayer, []StorageAPI, error) {
-	objLayer, err := newTestObjectLayer(ctx, endpointZones)
+func initObjectLayer(ctx context.Context, endpointServerSets EndpointServerSets) (ObjectLayer, []StorageAPI, error) {
+	objLayer, err := newTestObjectLayer(ctx, endpointServerSets)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	var formattedDisks []StorageAPI
 	// Should use the object layer tests for validating cache.
-	if z, ok := objLayer.(*erasureZones); ok {
-		formattedDisks = z.zones[0].GetDisks(0)()
+	if z, ok := objLayer.(*erasureServerSets); ok {
+		formattedDisks = z.serverSets[0].GetDisks(0)()
 	}
 
 	// Success.
@@ -2215,7 +2218,7 @@ func generateTLSCertKey(host string) ([]byte, []byte, error) {
 	return certOut.Bytes(), keyOut.Bytes(), nil
 }
 
-func mustGetZoneEndpoints(args ...string) EndpointZones {
+func mustGetZoneEndpoints(args ...string) EndpointServerSets {
 	endpoints := mustGetNewEndpoints(args...)
 	return []ZoneEndpoints{{
 		SetCount:     1,
@@ -2230,8 +2233,8 @@ func mustGetNewEndpoints(args ...string) (endpoints Endpoints) {
 	return endpoints
 }
 
-func getEndpointsLocalAddr(endpointZones EndpointZones) string {
-	for _, endpoints := range endpointZones {
+func getEndpointsLocalAddr(endpointServerSets EndpointServerSets) string {
+	for _, endpoints := range endpointServerSets {
 		for _, endpoint := range endpoints.Endpoints {
 			if endpoint.IsLocal && endpoint.Type() == URLEndpointType {
 				return endpoint.Host

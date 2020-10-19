@@ -458,7 +458,7 @@ func (b *bucketMetacache) deleteCache(id string) {
 			logger.LogIf(ctx, errors.New("bucketMetacache: no object layer"))
 			return
 		}
-		ez, ok := objAPI.(*erasureZones)
+		ez, ok := objAPI.(*erasureServerSets)
 		if !ok {
 			logger.LogIf(ctx, errors.New("bucketMetacache: expected objAPI to be *erasureZones"))
 			return
