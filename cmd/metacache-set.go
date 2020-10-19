@@ -353,6 +353,10 @@ func (er *erasureObjects) streamMetadataParts(ctx context.Context, o listPathOpt
 			if debugPrint {
 				console.Infoln("first getObjectFileInfo", o.objectPath(0), "returned err:", err)
 			}
+			if err != nil {
+				fmt.Println("first getObjectFileInfo", o.objectPath(0), "returned err:", err)
+				fmt.Printf("err type: %T\n", err)
+			}
 			return entries, err
 		}
 		if fi.Deleted {
@@ -433,9 +437,20 @@ func (er *erasureObjects) streamMetadataParts(ctx context.Context, o listPathOpt
 			}
 			buf.Reset()
 			err := er.getObjectWithFileInfo(ctx, minioMetaBucket, o.objectPath(partN), 0, fi.Size, &buf, fi, metaArr, onlineDisks)
-			if err != nil {
+			switch err {
+			case errFileNotFound, errErasureReadQuorum, InsufficientReadQuorum{}:
+				if retries >= 20 {
+					// We had at least 10 retries without getting a result.
+					logger.LogIf(ctx, err)
+					return entries, err
+				}
+				retries++
+				time.Sleep(100 * time.Millisecond)
+				continue
+			default:
 				logger.LogIf(ctx, err)
 				return entries, err
+			case nil:
 			}
 			tmp, err := newMetacacheReader(&buf)
 			if err != nil {
