@@ -103,9 +103,12 @@ func (z *erasureServerSets) listPath(ctx context.Context, bucket, prefix, marker
 		} else {
 			c, err := rpc.GetMetacacheListing(ctx, opts)
 			if err != nil {
-				return entries, err
+				logger.LogIf(ctx, err)
+				cache = localMetacacheMgr.getTransient().findCache(opts)
+				opts.Transient = true
+			} else {
+				cache = *c
 			}
-			cache = *c
 		}
 		if cache.fileNotFound {
 			return entries, errFileNotFound
@@ -169,7 +172,9 @@ func (z *erasureServerSets) listPath(ctx context.Context, bucket, prefix, marker
 		cache.status = scanStateSuccess
 		cache.fileNotFound = true
 		client := globalNotificationSys.restClientFromHash(opts.Bucket)
-		if client == nil {
+		if opts.Transient {
+			cache, err = localMetacacheMgr.getTransient().updateCacheEntry(cache)
+		} else if client == nil {
 			cache, err = localMetacacheMgr.getBucket(GlobalContext, opts.Bucket).updateCacheEntry(cache)
 		} else {
 			cache, err = client.UpdateMetacacheListing(context.Background(), cache)

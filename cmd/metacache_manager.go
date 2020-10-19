@@ -41,8 +41,15 @@ type metacacheManager struct {
 	buckets map[string]*bucketMetacache
 }
 
+const metacacheManagerTransientBucket = "**transient**"
+
 // initManager will start async saving the cache.
 func (m *metacacheManager) initManager() {
+	// Add a transient bucket.
+	tb := newBucketMetacache(metacacheManagerTransientBucket)
+	tb.transient = true
+	m.buckets[metacacheManagerTransientBucket] = tb
+
 	// Start saver when object layer is ready.
 	go func() {
 		objAPI := newObjectLayerFn()
@@ -73,6 +80,7 @@ func (m *metacacheManager) initManager() {
 			}
 			m.mu.RUnlock()
 		}
+		m.getTransient().deleteAll()
 	}()
 }
 
@@ -114,23 +122,37 @@ func (m *metacacheManager) getBucket(ctx context.Context, bucket string) *bucket
 	return b
 }
 
+// getTransient will return a transient bucket.
+func (m *metacacheManager) getTransient() *bucketMetacache {
+	m.init.Do(m.initManager)
+	m.mu.RLock()
+	bmc := m.buckets[metacacheManagerTransientBucket]
+	m.mu.RUnlock()
+	return bmc
+}
+
 // checkMetacacheState should be used if data is not updating.
 // Should only be called if a failure occurred.
 func (o listPathOptions) checkMetacacheState(ctx context.Context) error {
 	// We operate on a copy...
 	o.Create = false
-	rpc := globalNotificationSys.restClientFromHash(o.Bucket)
 	var cache metacache
-	if rpc == nil {
-		// Local
-		cache = localMetacacheMgr.getBucket(ctx, o.Bucket).findCache(o)
-	} else {
-		c, err := rpc.GetMetacacheListing(ctx, o)
-		if err != nil {
-			return err
+	if !o.Transient {
+		rpc := globalNotificationSys.restClientFromHash(o.Bucket)
+		if rpc == nil {
+			// Local
+			cache = localMetacacheMgr.getBucket(ctx, o.Bucket).findCache(o)
+		} else {
+			c, err := rpc.GetMetacacheListing(ctx, o)
+			if err != nil {
+				return err
+			}
+			cache = *c
 		}
-		cache = *c
+	} else {
+		cache = localMetacacheMgr.getTransient().findCache(o)
 	}
+
 	if cache.status == scanStateNone {
 		return errFileNotFound
 	}

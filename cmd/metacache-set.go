@@ -80,6 +80,9 @@ type listPathOptions struct {
 
 	// Include pure directories.
 	IncludeDirectories bool
+
+	// Transient is set if the cache is transient due to an error.
+	Transient bool
 }
 
 func init() {
@@ -599,7 +602,9 @@ func (er *erasureObjects) listPath(ctx context.Context, o listPathOptions) (entr
 				lm := meta
 				metaMu.Unlock()
 				var err error
-				if rpcClient == nil {
+				if o.Transient {
+					lm, err = localMetacacheMgr.getTransient().updateCacheEntry(lm)
+				} else if rpcClient == nil {
 					lm, err = localMetacacheMgr.getBucket(GlobalContext, o.Bucket).updateCacheEntry(lm)
 				} else {
 					lm, err = rpcClient.UpdateMetacacheListing(context.Background(), lm)

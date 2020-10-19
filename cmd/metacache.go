@@ -134,8 +134,9 @@ type bucketMetacache struct {
 	caches map[string]metacache
 
 	// Internal state
-	mu      sync.RWMutex `msg:"-"`
-	updated bool         `msg:"-"`
+	mu        sync.RWMutex `msg:"-"`
+	updated   bool         `msg:"-"`
+	transient bool         `msg:"-"`
 }
 
 func newBucketMetacache(bucket string) *bucketMetacache {
@@ -195,6 +196,9 @@ func loadBucketMetaCache(ctx context.Context, bucket string) (*bucketMetacache, 
 
 // save the bucket cache to the object storage.
 func (b *bucketMetacache) save(ctx context.Context) error {
+	if b.transient {
+		return nil
+	}
 	objAPI := newObjectLayerFn()
 	if objAPI == nil {
 		return errServerNotInitialized
@@ -240,7 +244,8 @@ func (b *bucketMetacache) findCache(o listPathOptions) metacache {
 		logger.Info("bucketMetacache.findCache: nil cache for bucket %s", o.Bucket)
 		return metacache{}
 	}
-	if o.Bucket != b.bucket {
+
+	if o.Bucket != b.bucket && !b.transient {
 		logger.Info("bucketMetacache.findCache: bucket %s does not match this bucket %s", o.Bucket, b.bucket)
 		debug.PrintStack()
 		return metacache{}
@@ -267,6 +272,10 @@ func (b *bucketMetacache) findCache(o listPathOptions) metacache {
 
 	var best metacache
 	for _, cached := range b.caches {
+		// Transient can belong in multiple buckets.
+		if b.transient && cached.bucket != o.Bucket {
+			continue
+		}
 		if cached.status == scanStateError || cached.dataVersion != metacacheStreamVersion {
 			debugPrint("cache %s state or stream version mismatch", cached.id)
 			continue
@@ -349,6 +358,10 @@ func (b *bucketMetacache) cleanup() {
 
 	b.mu.RLock()
 	for id, cache := range b.caches {
+		if b.transient && time.Since(cache.started) > time.Hour {
+			// Keep transient caches only for 1 hour.
+			remove[id] = struct{}{}
+		}
 		if !cache.worthKeeping(currentCycle) {
 			debugPrint("cache %s not worth keeping", id)
 			remove[id] = struct{}{}
@@ -441,6 +454,29 @@ func (b *bucketMetacache) getCache(id string) *metacache {
 		return nil
 	}
 	return &c
+}
+
+// deleteAll will delete all ondisk data for caches.
+func (b *bucketMetacache) deleteAll() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	ctx := context.Background()
+	ez, ok := newObjectLayerFn().(*erasureServerSets)
+	if !ok {
+		logger.LogIf(ctx, errors.New("bucketMetacache: expected objAPI to be *erasureZones"))
+		return
+	}
+	var wg sync.WaitGroup
+	for id := range b.caches {
+		wg.Add(1)
+		go func(cache metacache) {
+			defer wg.Done()
+			logger.LogIf(ctx, ez.deleteAll(ctx, minioMetaBucket, metacachePrefixForID(cache.bucket, cache.id)))
+		}(b.caches[id])
+		delete(b.caches, id)
+	}
+	wg.Wait()
 }
 
 func (b *bucketMetacache) deleteCache(id string) {
