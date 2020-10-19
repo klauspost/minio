@@ -836,7 +836,8 @@ func (h *httpStreamResponse) CloseWithError(err error) {
 	}
 	h.done <- err
 	h.err = err
-	close(h.done)
+	// Indicates that the response is done.
+	<-h.done
 	h.done = nil
 }
 
@@ -861,6 +862,7 @@ func streamHTTPResponse(w http.ResponseWriter) *httpStreamResponse {
 				w.(http.Flusher).Flush()
 			case err := <-doneCh:
 				ticker.Stop()
+				defer close(doneCh)
 				if err != nil {
 					var buf bytes.Buffer
 					enc := gob.NewEncoder(&buf)
