@@ -89,7 +89,7 @@ func (m *metacacheManager) getBucket(ctx context.Context, bucket string) *bucket
 	m.init.Do(m.initManager)
 
 	// Return a transient bucket for invalid or system buckets.
-	if isMinioReservedBucket(bucket) {
+	if isReservedOrInvalidBucket(bucket, false) {
 		return m.getTransient()
 	}
 	m.mu.RLock()
