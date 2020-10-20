@@ -28,7 +28,7 @@ import (
 // listPath will return the requested entries.
 // If no more entries are in the listing io.EOF is returned,
 // otherwise nil or an unexpected error is returned.
-func (z *erasureServerSets) listPath(ctx context.Context, bucket, prefix, marker, delimiter string, maxKeys int) (entries metaCacheEntriesSorted, err error) {
+func (z *erasureServerSets) listPath(ctx context.Context, bucket, prefix, marker, delimiter string, maxKeys int, inclDeleted bool) (entries metaCacheEntriesSorted, err error) {
 	if err := checkListObjsArgs(ctx, bucket, prefix, marker, z); err != nil {
 		return entries, err
 	}
@@ -85,7 +85,7 @@ func (z *erasureServerSets) listPath(ctx context.Context, bucket, prefix, marker
 		Marker:             marker,
 		Limit:              maxKeys,
 		IncludeDirectories: withDirs,
-		InclDeleted:        true,
+		InclDeleted:        inclDeleted,
 		Recursive:          recursive,
 		Separator:          delimiter,
 		Create:             createNew,
