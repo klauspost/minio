@@ -177,7 +177,8 @@ func loadBucketMetaCache(ctx context.Context, bucket string) (*bucketMetacache, 
 		s2DecPool.Put(dec)
 		r.CloseWithError(decErr)
 	}()
-	err := objAPI.GetObject(ctx, minioMetaBucket, pathJoin("buckets", bucket, ".metacache", "index.s2"), 0, -1, w, "", ObjectOptions{})
+	// Use global context for this.
+	err := objAPI.GetObject(GlobalContext, minioMetaBucket, pathJoin("buckets", bucket, ".metacache", "index.s2"), 0, -1, w, "", ObjectOptions{})
 	logger.LogIf(ctx, w.CloseWithError(err))
 	if err != nil {
 		if isErrObjectNotFound(err) {
@@ -189,9 +190,12 @@ func loadBucketMetaCache(ctx context.Context, bucket string) (*bucketMetacache, 
 	}
 	wg.Wait()
 	if decErr != nil {
+		// Log the error, but assume the data is lost and return a fresh bucket.
+		// Otherwise a broken cache will never recover.
 		logger.LogIf(ctx, decErr)
-		return newBucketMetacache(bucket), err
+		return newBucketMetacache(bucket), nil
 	}
+	// Sanity check...
 	if meta.bucket != bucket {
 		logger.Info("loadBucketMetaCache: loaded cache name mismatch, want %s, got %s. Discarding.", bucket, meta.bucket)
 		return newBucketMetacache(bucket), nil

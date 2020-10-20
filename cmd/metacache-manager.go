@@ -114,15 +114,17 @@ func (m *metacacheManager) getBucket(ctx context.Context, bucket string) *bucket
 		}
 		return b
 	}
-	// Load global context, so canceling doesn't abort it.
-	b, err := loadBucketMetaCache(GlobalContext, bucket)
-	if err == nil {
-		if b.bucket != bucket {
-			logger.Info("getBucket: loaded bucket %s does not match this bucket %s", b.bucket, bucket)
-			debug.PrintStack()
-		}
-		m.buckets[bucket] = b
+
+	// Load bucket. If we fail return the transient bucket.
+	b, err := loadBucketMetaCache(ctx, bucket)
+	if err != nil {
+		m.mu.Unlock()
+		return m.getTransient()
 	}
+	if b.bucket != bucket {
+		logger.LogIf(ctx, fmt.Errorf("getBucket: loaded bucket %s does not match this bucket %s", b.bucket, bucket))
+	}
+	m.buckets[bucket] = b
 	m.mu.Unlock()
 	return b
 }
