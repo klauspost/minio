@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"path"
 	"runtime/debug"
@@ -158,8 +159,7 @@ func loadBucketMetaCache(ctx context.Context, bucket string) (*bucketMetacache, 
 		}
 		objAPI = newObjectLayerFn()
 		if objAPI == nil {
-			debug.PrintStack()
-			logger.Info("loadBucketMetaCache: object layer not ready")
+			logger.LogIf(ctx, fmt.Errorf("loadBucketMetaCache: object layer not ready. bucket: %q", bucket))
 		}
 	}
 	var meta bucketMetacache
