@@ -1269,7 +1269,7 @@ func testListObjectVersions(obj ObjectLayer, instanceType string, t1 TestErrHand
 				}
 
 				if len(testCase.result.Prefixes) != len(result.Prefixes) {
-					fmt.Println(testCase, testCase.result.Prefixes, result.Prefixes)
+					t.Log(testCase, testCase.result.Prefixes, result.Prefixes)
 					t.Fatalf("%s: Expected number of prefixes in the result to be '%d', but found '%d' prefixes instead", instanceType, len(testCase.result.Prefixes), len(result.Prefixes))
 				}
 				for j := 0; j < len(testCase.result.Prefixes); j++ {

@@ -355,10 +355,7 @@ func (er *erasureObjects) streamMetadataParts(ctx context.Context, o listPathOpt
 			}
 			if debugPrint {
 				console.Infoln("first getObjectFileInfo", o.objectPath(0), "returned err:", err)
-			}
-			if err != nil {
-				fmt.Println("first getObjectFileInfo", o.objectPath(0), "returned err:", err)
-				fmt.Printf("err type: %T\n", err)
+				console.Infof("err type: %T\n", err)
 			}
 			return entries, err
 		}
@@ -620,7 +617,7 @@ func (er *erasureObjects) listPath(ctx context.Context, o listPathOptions) (entr
 		// Write results to disk.
 		bw := newMetacacheBlockWriter(cacheCh, func(b *metacacheBlock) error {
 			if debugPrint {
-				fmt.Println("listPath: saving block", b.n, "to", o.objectPath(b.n))
+				console.Println("listPath: saving block", b.n, "to", o.objectPath(b.n))
 			}
 			r, err := hash.NewReader(bytes.NewBuffer(b.data), int64(len(b.data)), "", "", int64(len(b.data)), false)
 			logger.LogIf(ctx, err)

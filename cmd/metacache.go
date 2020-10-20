@@ -379,7 +379,7 @@ func (b *bucketMetacache) cleanup() {
 			logger.Info("cache ID mismatch %s != %s", id, cache.id)
 			remove[id] = struct{}{}
 		}
-		if cache.bucket != b.bucket {
+		if cache.bucket != b.bucket && !b.transient {
 			logger.Info("cache bucket mismatch %s != %s", b.bucket, cache.bucket)
 			remove[id] = struct{}{}
 		}
@@ -505,7 +505,7 @@ func (b *bucketMetacache) deleteCache(id string) {
 		}
 		ez, ok := objAPI.(*erasureServerSets)
 		if !ok {
-			logger.LogIf(ctx, errors.New("bucketMetacache: expected objAPI to be *erasureZones"))
+			logger.LogIf(ctx, errors.New("bucketMetacache: expected objAPI to be *erasureServerSets"))
 			return
 		}
 		logger.LogIf(ctx, ez.deleteAll(ctx, minioMetaBucket, metacachePrefixForID(c.bucket, c.id)))

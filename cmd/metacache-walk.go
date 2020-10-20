@@ -47,8 +47,6 @@ type WalkDirOptions struct {
 // WalkDir will traverse a directory and return all entries found.
 // On success a sorted meta cache stream will be returned.
 func (s *xlStorage) WalkDir(ctx context.Context, opts WalkDirOptions, wr io.Writer) error {
-	//fmt.Println("WalkDir with basedir", opts.BaseDir, "and bucket", opts.Bucket)
-
 	// It is possible to implement an unsorted version of this that returns entries out-of-order.
 	// The total processing time would be the same, but it will have a much faster time to first entry.
 	atomic.AddInt32(&s.activeIOCount, 1)
