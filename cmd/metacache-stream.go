@@ -32,6 +32,24 @@ import (
 	"github.com/tinylib/msgp/msgp"
 )
 
+// metadata stream format:
+//
+// The stream is s2 compressed.
+// This ensures integrity and reduces the size typically by at lest 50%.
+//
+// All stream elements are msgpack encoded.
+//
+// 1 Integer, metacacheStreamVersion of the writer.
+//
+// For each element:
+// 1. Bool. If false at end of stream.
+// 2. String. Name of object. Directories contains a trailing slash.
+// 3. Binary. Blob of metadata. Length 0 on directories.
+// ... Next element.
+//
+// Streams can be assumed to be sorted in ascending order.
+// If the stream ends before a false boolean it can be assumed it was truncated.
+
 const metacacheStreamVersion = 1
 
 // metacacheWriter provides a serializer of metacache objects.
