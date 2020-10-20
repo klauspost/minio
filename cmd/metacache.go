@@ -272,9 +272,9 @@ func (b *bucketMetacache) findCache(o listPathOptions) metacache {
 
 	var best metacache
 	for _, cached := range b.caches {
-		// Transient can belong in multiple buckets.
-		if b.transient && cached.bucket != o.Bucket {
-			continue
+		// Never return transient caches if there is no id.
+		if b.transient {
+			break
 		}
 		if cached.status == scanStateError || cached.dataVersion != metacacheStreamVersion {
 			debugPrint("cache %s state or stream version mismatch", cached.id)

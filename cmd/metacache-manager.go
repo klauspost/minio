@@ -87,6 +87,11 @@ func (m *metacacheManager) initManager() {
 // getBucket will get a bucket metacache or load it from disk if needed.
 func (m *metacacheManager) getBucket(ctx context.Context, bucket string) *bucketMetacache {
 	m.init.Do(m.initManager)
+
+	// Return a transient bucket for invalid or system buckets.
+	if isMinioReservedBucket(bucket) {
+		return m.getTransient()
+	}
 	m.mu.RLock()
 	b, ok := m.buckets[bucket]
 	m.mu.RUnlock()
