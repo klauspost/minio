@@ -151,9 +151,14 @@ func newBucketMetacache(bucket string) *bucketMetacache {
 func loadBucketMetaCache(ctx context.Context, bucket string) (*bucketMetacache, error) {
 	objAPI := newObjectLayerFn()
 	for objAPI == nil {
-		time.Sleep(250 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(250 * time.Millisecond):
+		}
 		objAPI = newObjectLayerFn()
 		if objAPI == nil {
+			debug.PrintStack()
 			logger.Info("loadBucketMetaCache: object layer not ready")
 		}
 	}
