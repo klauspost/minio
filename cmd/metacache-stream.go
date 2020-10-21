@@ -35,11 +35,13 @@ import (
 // metadata stream format:
 //
 // The stream is s2 compressed.
-// This ensures integrity and reduces the size typically by at lest 50%.
+// https://github.com/klauspost/compress/tree/master/s2#s2-compression
+// This ensures integrity and reduces the size typically by at least 50%.
 //
 // All stream elements are msgpack encoded.
 //
 // 1 Integer, metacacheStreamVersion of the writer.
+// This can be used for managing breaking changes.
 //
 // For each element:
 // 1. Bool. If false at end of stream.
