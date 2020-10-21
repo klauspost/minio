@@ -9,8 +9,8 @@ import (
 	"github.com/tinylib/msgp/msgp"
 )
 
-func TestMarshalUnmarshalmetacache(t *testing.T) {
-	v := metacache{}
+func TestMarshalUnmarshalbucketMetacache(t *testing.T) {
+	v := bucketMetacache{}
 	bts, err := v.MarshalMsg(nil)
 	if err != nil {
 		t.Fatal(err)
@@ -32,8 +32,8 @@ func TestMarshalUnmarshalmetacache(t *testing.T) {
 	}
 }
 
-func BenchmarkMarshalMsgmetacache(b *testing.B) {
-	v := metacache{}
+func BenchmarkMarshalMsgbucketMetacache(b *testing.B) {
+	v := bucketMetacache{}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -41,8 +41,8 @@ func BenchmarkMarshalMsgmetacache(b *testing.B) {
 	}
 }
 
-func BenchmarkAppendMsgmetacache(b *testing.B) {
-	v := metacache{}
+func BenchmarkAppendMsgbucketMetacache(b *testing.B) {
+	v := bucketMetacache{}
 	bts := make([]byte, 0, v.Msgsize())
 	bts, _ = v.MarshalMsg(bts[0:0])
 	b.SetBytes(int64(len(bts)))
@@ -53,8 +53,8 @@ func BenchmarkAppendMsgmetacache(b *testing.B) {
 	}
 }
 
-func BenchmarkUnmarshalmetacache(b *testing.B) {
-	v := metacache{}
+func BenchmarkUnmarshalbucketMetacache(b *testing.B) {
+	v := bucketMetacache{}
 	bts, _ := v.MarshalMsg(nil)
 	b.ReportAllocs()
 	b.SetBytes(int64(len(bts)))
@@ -67,17 +67,17 @@ func BenchmarkUnmarshalmetacache(b *testing.B) {
 	}
 }
 
-func TestEncodeDecodemetacache(t *testing.T) {
-	v := metacache{}
+func TestEncodeDecodebucketMetacache(t *testing.T) {
+	v := bucketMetacache{}
 	var buf bytes.Buffer
 	msgp.Encode(&buf, &v)
 
 	m := v.Msgsize()
 	if buf.Len() > m {
-		t.Log("WARNING: TestEncodeDecodemetacache Msgsize() is inaccurate")
+		t.Log("WARNING: TestEncodeDecodebucketMetacache Msgsize() is inaccurate")
 	}
 
-	vn := metacache{}
+	vn := bucketMetacache{}
 	err := msgp.Decode(&buf, &vn)
 	if err != nil {
 		t.Error(err)
@@ -91,8 +91,8 @@ func TestEncodeDecodemetacache(t *testing.T) {
 	}
 }
 
-func BenchmarkEncodemetacache(b *testing.B) {
-	v := metacache{}
+func BenchmarkEncodebucketMetacache(b *testing.B) {
+	v := bucketMetacache{}
 	var buf bytes.Buffer
 	msgp.Encode(&buf, &v)
 	b.SetBytes(int64(buf.Len()))
@@ -105,8 +105,8 @@ func BenchmarkEncodemetacache(b *testing.B) {
 	en.Flush()
 }
 
-func BenchmarkDecodemetacache(b *testing.B) {
-	v := metacache{}
+func BenchmarkDecodebucketMetacache(b *testing.B) {
+	v := bucketMetacache{}
 	var buf bytes.Buffer
 	msgp.Encode(&buf, &v)
 	b.SetBytes(int64(buf.Len()))

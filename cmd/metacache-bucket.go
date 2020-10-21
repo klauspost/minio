@@ -33,6 +33,8 @@ import (
 	"github.com/tinylib/msgp/msgp"
 )
 
+//go:generate msgp -file $GOFILE -unexported
+
 // a bucketMetacache keeps track of all caches generated
 // for a bucket.
 type bucketMetacache struct {
