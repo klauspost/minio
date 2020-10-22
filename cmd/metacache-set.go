@@ -81,7 +81,9 @@ type listPathOptions struct {
 	// Include pure directories.
 	IncludeDirectories bool
 
-	// Transient is set if the cache is transient due to an error.
+	// Transient is set if the cache is transient due to an error or being a reserved bucket.
+	// This means the cache metadata will not be persisted on disk.
+	// A transient result will never be returned from the cache so knowing the list id is required.
 	Transient bool
 }
 

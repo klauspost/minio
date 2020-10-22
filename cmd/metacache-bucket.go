@@ -47,7 +47,7 @@ type bucketMetacache struct {
 	// Internal state
 	mu        sync.RWMutex `msg:"-"`
 	updated   bool         `msg:"-"`
-	transient bool         `msg:"-"`
+	transient bool         `msg:"-"` // bucket used for non-persisted caches.
 }
 
 // newBucketMetacache creates a new bucketMetacache.

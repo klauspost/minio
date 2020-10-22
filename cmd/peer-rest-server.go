@@ -664,13 +664,13 @@ func (s *peerRESTServer) GetMetacacheListingHandler(w http.ResponseWriter, r *ht
 	}
 	ctx := newContext(r, w, "GetMetacacheListing")
 
-	var req listPathOptions
-	err := gob.NewDecoder(r.Body).Decode(&req)
+	var opts listPathOptions
+	err := gob.NewDecoder(r.Body).Decode(&opts)
 	if err != nil && err != io.EOF {
 		s.writeErrorResponse(w, err)
 		return
 	}
-	resp := localMetacacheMgr.getBucket(ctx, req.Bucket).findCache(req)
+	resp := localMetacacheMgr.getBucket(ctx, opts.Bucket).findCache(opts)
 	logger.LogIf(ctx, msgp.Encode(w, &resp))
 }
 
