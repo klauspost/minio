@@ -34,6 +34,7 @@ import (
 	"encoding/pem"
 	"encoding/xml"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -52,6 +53,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fatih/color"
 	"github.com/gorilla/mux"
 	"github.com/minio/minio-go/v7/pkg/s3utils"
 	"github.com/minio/minio-go/v7/pkg/signer"
@@ -64,8 +66,9 @@ import (
 	"github.com/minio/minio/pkg/hash"
 )
 
-// Tests should initNSLock only once.
-func init() {
+// TestMain to set up global env.
+func TestMain(m *testing.M) {
+	flag.Parse()
 	globalActiveCred = auth.Credentials{
 		AccessKey: auth.DefaultAccessKey,
 		SecretKey: auth.DefaultSecretKey,
@@ -88,8 +91,13 @@ func init() {
 	// Set as non-distributed.
 	globalIsDistErasure = false
 
-	// Disable printing console messages during tests.
-	// color.Output = ioutil.Discard
+	if !testing.Verbose() {
+		// Disable printing console messages during tests.
+		color.Output = ioutil.Discard
+		logger.Disable = true
+	}
+	// Uncomment the following line to see trace logs during unit tests.
+	// logger.AddTarget(console.New())
 
 	// Set system resources to maximum.
 	setMaxResources()
@@ -97,18 +105,16 @@ func init() {
 	// Initialize globalConsoleSys system
 	globalConsoleSys = NewConsoleLogger(context.Background())
 
-	logger.Disable = false
-
 	globalDNSCache = xhttp.NewDNSCache(3*time.Second, 10*time.Second)
 
 	initHelp()
 
 	resetTestGlobals()
-	// Uncomment the following line to see trace logs during unit tests.
-	// logger.AddTarget(console.New())
+
+	os.Exit(m.Run())
 }
 
-// concurreny level for certain parallel tests.
+// concurrency level for certain parallel tests.
 const testConcurrencyLevel = 10
 
 ///
