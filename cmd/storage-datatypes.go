@@ -59,6 +59,19 @@ type FileInfoVersions struct {
 	Versions []FileInfo
 }
 
+// forwardPastVersion will truncate the result to only contain versions after 'v'.
+// If v is empty or the version isn't found no changes will be made.
+func (f *FileInfoVersions) forwardPastVersion(v string) {
+	if v == "" {
+		return
+	}
+	for i, ver := range f.Versions {
+		if ver.VersionID == v {
+			f.Versions = f.Versions[i+1:]
+		}
+	}
+}
+
 // FileInfo - represents file stat information.
 type FileInfo struct {
 	// Name of the volume.

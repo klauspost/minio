@@ -858,10 +858,16 @@ func (z *erasureServerSets) ListObjectVersions(ctx context.Context, bucket, pref
 	if err != nil && err != io.EOF {
 		return loi, err
 	}
-	loi.Objects, loi.Prefixes = merged.fileInfoVersions(bucket, prefix, delimiter)
+	loi.Objects, loi.Prefixes = merged.fileInfoVersions(bucket, prefix, delimiter, versionMarker)
 	loi.IsTruncated = err == nil && len(loi.Objects) > 0
+	if maxKeys > 0 && len(loi.Objects) > maxKeys {
+		loi.Objects = loi.Objects[:maxKeys]
+		loi.IsTruncated = true
+	}
 	if loi.IsTruncated {
-		loi.NextMarker = encodeMarker(loi.Objects[len(loi.Objects)-1].Name, merged.listID)
+		last := loi.Objects[len(loi.Objects)-1]
+		loi.NextMarker = encodeMarker(last.Name, merged.listID)
+		loi.NextVersionIDMarker = last.VersionID
 	}
 	return loi, nil
 }
