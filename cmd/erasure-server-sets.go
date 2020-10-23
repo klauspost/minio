@@ -847,7 +847,14 @@ func (z *erasureServerSets) ListObjectVersions(ctx context.Context, bucket, pref
 	if marker == "" && versionMarker != "" {
 		return loi, NotImplemented{}
 	}
-	merged, err := z.listPath(ctx, bucket, prefix, marker, delimiter, maxKeys, true)
+	merged, err := z.listPath(ctx, listPathOptions{
+		Bucket:      bucket,
+		Prefix:      prefix,
+		Separator:   delimiter,
+		Limit:       maxKeys,
+		Marker:      marker,
+		InclDeleted: true,
+	})
 	if err != nil && err != io.EOF {
 		return loi, err
 	}
@@ -861,7 +868,14 @@ func (z *erasureServerSets) ListObjectVersions(ctx context.Context, bucket, pref
 
 func (z *erasureServerSets) ListObjects(ctx context.Context, bucket, prefix, marker, delimiter string, maxKeys int) (ListObjectsInfo, error) {
 	var loi ListObjectsInfo
-	merged, err := z.listPath(ctx, bucket, prefix, marker, delimiter, maxKeys, false)
+	merged, err := z.listPath(ctx, listPathOptions{
+		Bucket:      bucket,
+		Prefix:      prefix,
+		Separator:   delimiter,
+		Limit:       maxKeys,
+		Marker:      marker,
+		InclDeleted: false,
+	})
 	if err != nil && err != io.EOF {
 		logger.LogIf(ctx, err)
 		return loi, err

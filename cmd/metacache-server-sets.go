@@ -28,21 +28,25 @@ import (
 // listPath will return the requested entries.
 // If no more entries are in the listing io.EOF is returned,
 // otherwise nil or an unexpected error is returned.
-func (z *erasureServerSets) listPath(ctx context.Context, bucket, prefix, marker, delimiter string, maxKeys int, inclDeleted bool) (entries metaCacheEntriesSorted, err error) {
-	if err := checkListObjsArgs(ctx, bucket, prefix, marker, z); err != nil {
+// The listPathOptions given will be checked and modified internally.
+// Required important fields are Bucket, Prefix, Separator.
+// Other important fields are Limit, Marker.
+// List ID always derived from the Marker.
+func (z *erasureServerSets) listPath(ctx context.Context, o listPathOptions) (entries metaCacheEntriesSorted, err error) {
+	if err := checkListObjsArgs(ctx, o.Bucket, o.Prefix, o.Marker, z); err != nil {
 		return entries, err
 	}
 
 	// Marker is set validate pre-condition.
-	if marker != "" && prefix != "" {
+	if o.Marker != "" && o.Prefix != "" {
 		// Marker not common with prefix is not implemented. Send an empty response
-		if !HasPrefix(marker, prefix) {
+		if !HasPrefix(o.Marker, o.Prefix) {
 			return entries, io.EOF
 		}
 	}
 
 	// With max keys of zero we have reached eof, return right here.
-	if maxKeys == 0 {
+	if o.Limit == 0 {
 		return entries, io.EOF
 	}
 
@@ -51,61 +55,50 @@ func (z *erasureServerSets) listPath(ctx context.Context, bucket, prefix, marker
 	// along // with the prefix. On a flat namespace with 'prefix'
 	// as '/' we don't have any entries, since all the keys are
 	// of form 'keyName/...'
-	if delimiter == SlashSeparator && prefix == SlashSeparator {
+	if o.Separator == SlashSeparator && o.Prefix == SlashSeparator {
 		return entries, io.EOF
 	}
 
 	// Over flowing count - reset to maxObjectList.
-	if maxKeys < 0 || maxKeys > maxObjectList {
-		maxKeys = maxObjectList
+	if o.Limit < 0 || o.Limit > maxObjectList {
+		o.Limit = maxObjectList
 	}
 
-	// Default is recursive, if delimiter is set then list non recursive.
-	recursive := true
-	// If delimiter is slashSeparator we must return directories of the non-recursive scan.
-	withDirs := delimiter == slashSeparator
-	if delimiter == slashSeparator || delimiter == "" {
-		recursive = delimiter != slashSeparator
-		delimiter = slashSeparator
+	// If delimiter is slashSeparator we must return directories of
+	// the non-recursive scan unless explicitly requested.
+	o.IncludeDirectories = o.Separator == slashSeparator
+	if (o.Separator == slashSeparator || o.Separator == "") && !o.Recursive {
+		o.Recursive = o.Separator != slashSeparator
+		o.Separator = slashSeparator
+	} else {
+		// Default is recursive, if delimiter is set then list non recursive.
+		o.Recursive = true
 	}
 
 	// Decode and get the optional list id from the marker.
-	marker, listID := parseMarker(marker)
-	createNew := listID == ""
-	if listID == "" {
-		listID = mustGetUUID()
+	o.Marker, o.ID = parseMarker(o.Marker)
+	o.Create = o.ID == ""
+	if o.ID == "" {
+		o.ID = mustGetUUID()
 	}
+	o.BaseDir = baseDirFromPrefix(o.Prefix)
 
-	// Convert input to collected options.
-	opts := listPathOptions{
-		ID:                 listID,
-		Bucket:             bucket,
-		BaseDir:            baseDirFromPrefix(prefix),
-		Prefix:             prefix,
-		Marker:             marker,
-		Limit:              maxKeys,
-		IncludeDirectories: withDirs,
-		InclDeleted:        inclDeleted,
-		Recursive:          recursive,
-		Separator:          delimiter,
-		Create:             createNew,
-	}
 	var cache metacache
 	// If we don't have a list id we must ask the server if it has a cache or create a new.
-	if createNew {
-		opts.CurrentCycle = intDataUpdateTracker.current()
-		opts.OldestCycle = globalNotificationSys.findEarliestCleanBloomFilter(ctx, path.Join(opts.Bucket, opts.BaseDir))
+	if o.Create {
+		o.CurrentCycle = intDataUpdateTracker.current()
+		o.OldestCycle = globalNotificationSys.findEarliestCleanBloomFilter(ctx, path.Join(o.Bucket, o.BaseDir))
 		var cache metacache
-		rpc := globalNotificationSys.restClientFromHash(bucket)
+		rpc := globalNotificationSys.restClientFromHash(o.Bucket)
 		if rpc == nil {
 			// Local
-			cache = localMetacacheMgr.getBucket(ctx, bucket).findCache(opts)
+			cache = localMetacacheMgr.getBucket(ctx, o.Bucket).findCache(o)
 		} else {
-			c, err := rpc.GetMetacacheListing(ctx, opts)
+			c, err := rpc.GetMetacacheListing(ctx, o)
 			if err != nil {
 				logger.LogIf(ctx, err)
-				cache = localMetacacheMgr.getTransient().findCache(opts)
-				opts.Transient = true
+				cache = localMetacacheMgr.getTransient().findCache(o)
+				o.Transient = true
 			} else {
 				cache = *c
 			}
@@ -114,8 +107,8 @@ func (z *erasureServerSets) listPath(ctx context.Context, bucket, prefix, marker
 			return entries, errFileNotFound
 		}
 		// Only create if we created a new.
-		opts.Create = opts.ID == cache.id
-		opts.ID = cache.id
+		o.Create = o.ID == cache.id
+		o.ID = cache.id
 	}
 
 	var mu sync.Mutex
@@ -131,7 +124,7 @@ func (z *erasureServerSets) listPath(ctx context.Context, bucket, prefix, marker
 			asked++
 			go func(i int, set *erasureObjects) {
 				defer wg.Done()
-				e, err := set.listPath(ctx, opts)
+				e, err := set.listPath(ctx, o)
 				mu.Lock()
 				defer mu.Unlock()
 				if err == nil {
@@ -145,19 +138,19 @@ func (z *erasureServerSets) listPath(ctx context.Context, bucket, prefix, marker
 					if existing.isDir() {
 						return false
 					}
-					eFIV, err := existing.fileInfo(bucket)
+					eFIV, err := existing.fileInfo(o.Bucket)
 					if err != nil {
 						return true
 					}
-					oFIV, err := existing.fileInfo(bucket)
+					oFIV, err := existing.fileInfo(o.Bucket)
 					if err != nil {
 						return false
 					}
 					return oFIV.ModTime.After(eFIV.ModTime)
 				})
-				if entries.len() > maxKeys {
+				if entries.len() > o.Limit {
 					allAtEOF = false
-					entries.truncate(maxKeys)
+					entries.truncate(o.Limit)
 				}
 			}(len(errs), set)
 			errs = append(errs, nil)
@@ -171,11 +164,11 @@ func (z *erasureServerSets) listPath(ctx context.Context, bucket, prefix, marker
 		// Update master cache with that information.
 		cache.status = scanStateSuccess
 		cache.fileNotFound = true
-		client := globalNotificationSys.restClientFromHash(opts.Bucket)
-		if opts.Transient {
+		client := globalNotificationSys.restClientFromHash(o.Bucket)
+		if o.Transient {
 			cache, err = localMetacacheMgr.getTransient().updateCacheEntry(cache)
 		} else if client == nil {
-			cache, err = localMetacacheMgr.getBucket(GlobalContext, opts.Bucket).updateCacheEntry(cache)
+			cache, err = localMetacacheMgr.getBucket(GlobalContext, o.Bucket).updateCacheEntry(cache)
 		} else {
 			cache, err = client.UpdateMetacacheListing(context.Background(), cache)
 		}
@@ -194,9 +187,9 @@ func (z *erasureServerSets) listPath(ctx context.Context, bucket, prefix, marker
 		logger.LogIf(ctx, err)
 		return entries, err
 	}
-	truncated := entries.len() > maxKeys || !allAtEOF
-	entries.truncate(maxKeys)
-	entries.listID = opts.ID
+	truncated := entries.len() > o.Limit || !allAtEOF
+	entries.truncate(o.Limit)
+	entries.listID = o.ID
 	if !truncated {
 		return entries, io.EOF
 	}
