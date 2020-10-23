@@ -68,6 +68,7 @@ func (f *FileInfoVersions) forwardPastVersion(v string) {
 	for i, ver := range f.Versions {
 		if ver.VersionID == v {
 			f.Versions = f.Versions[i+1:]
+			return
 		}
 	}
 }
