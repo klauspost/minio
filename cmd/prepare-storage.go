@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/dustin/go-humanize"
+	jsoniter "github.com/json-iterator/go"
 	xhttp "github.com/minio/minio/cmd/http"
 	"github.com/minio/minio/cmd/logger"
 	"github.com/minio/minio/pkg/sync/errgroup"
@@ -403,4 +404,166 @@ func waitForFormatErasure(firstDisk bool, endpoints Endpoints, zoneCount, setCou
 			return nil, nil, fmt.Errorf("Initializing data volumes gracefully stopped")
 		}
 	}
+}
+
+// detectDriveOrder will detect disk order by reading metadata from
+// ".minio.sys/buckets/.usage-cache.bin/xl.meta".
+func detectDriveOrder(ssets *erasureServerSets, repair bool) {
+	ctx := GlobalContext
+
+	canRepair := repair
+	shouldRepair := false
+	allFormats := make([][][]*formatErasureV3, len(ssets.serverSets))
+
+	for i, serverSet := range ssets.serverSets {
+		logger.Info("server set %d:", i)
+		allFormats[i] = make([][]*formatErasureV3, len(serverSet.sets))
+	nextSet:
+		for setIdx, set := range serverSet.sets {
+			storage := set.getDisks()
+			logger.Info("erasure set %d: %d disks", setIdx, len(storage))
+			formats := make([]*formatErasureV3, len(storage))
+			allFormats[i][setIdx] = formats
+			objects := make([]*xlMetaV2, len(storage))
+			disks := make([]StorageAPI, len(storage))
+			disksIDs := make([]string, len(storage))
+			foundIDs := make(map[string]struct{}, len(storage))
+			var nDisks, nFormats, nObjects int
+			for i, drive := range storage {
+				if drive == nil {
+					continue
+				}
+				var err error
+				disksIDs[i], err = drive.GetDiskID()
+				if err != nil {
+					continue
+				}
+				// Check for duplicates
+				if _, ok := foundIDs[disksIDs[i]]; ok {
+					logger.LogIf(ctx, fmt.Errorf("DUPLICATE DISK ID: %s", disksIDs[i]))
+					break nextSet
+				}
+				foundIDs[disksIDs[i]] = struct{}{}
+
+				nDisks++
+				disks[i] = drive
+				f, err := drive.ReadAll(ctx, minioMetaBucket, "format.json")
+				logger.LogIf(ctx, err)
+				if err == nil {
+					format := &formatErasureV3{}
+					var json = jsoniter.ConfigCompatibleWithStandardLibrary
+					logger.LogIf(ctx, err) // log unexpected errors
+					if err = json.Unmarshal(f, &format); err == nil {
+						formats[i] = format
+						nFormats++
+					}
+				}
+
+				// .usage-cache.bin is present on all sets, so we can maybe use that.
+				f, err = drive.ReadAll(ctx, minioMetaBucket, pathJoin("buckets", dataUsageCacheName, "/xl.meta"))
+				logger.LogIf(ctx, err)
+				if err == nil {
+					var xlMeta xlMetaV2
+					err := xlMeta.Load(f)
+					logger.LogIf(ctx, err)
+					if err == nil {
+						objects[i] = &xlMeta
+					}
+					nObjects++
+				}
+
+			}
+
+			logger.Info("found %d disks, %d format.json and %d object metadata", nDisks, nFormats, nObjects)
+			if nDisks < len(storage) {
+				logger.LogIf(ctx, fmt.Errorf("need %v disks, got %d. Cannot continue", len(storage), nDisks))
+				canRepair = false
+				break nextSet
+			}
+			needsUpdate := false
+			wantDiskIDOrder := make([]string, len(disks))
+			for i, meta := range objects {
+				if meta == nil || len(meta.Versions) == 0 {
+					logger.Info("no metadata from disk %d", i)
+					continue
+				}
+				v := meta.Versions[0]
+				if v.Type != ObjectType || v.ObjectV2 == nil {
+					logger.Info("disk %d: unusable object type %d: %v", i, v.Type, v.ObjectV2)
+					continue
+				}
+				logger.Info("disk: %d, order: %v, this:%d", i, v.ObjectV2.ErasureDist, v.ObjectV2.ErasureIndex)
+				if v.ObjectV2.ErasureDist[i] != uint8(v.ObjectV2.ErasureIndex) {
+					needsUpdate = true
+					for j, idx := range v.ObjectV2.ErasureDist {
+						if idx == uint8(v.ObjectV2.ErasureIndex) {
+							id := disksIDs[i]
+							if _, ok := foundIDs[id]; !ok {
+								logger.LogIf(ctx, fmt.Errorf("disk %d: Want id %s that was already taken", i, id))
+								break nextSet
+							}
+							logger.Info("disk %d: Should be at index %d instead", i, j)
+							delete(foundIDs, id)
+							wantDiskIDOrder[j] = id
+						}
+					}
+				} else {
+					id := disksIDs[i]
+					if _, ok := foundIDs[id]; !ok {
+						logger.LogIf(ctx, fmt.Errorf("disk %d: Want id %s that was already taken", i, id))
+						break nextSet
+					}
+					wantDiskIDOrder[i] = id
+					delete(foundIDs, id)
+					logger.Info("disk placed ok")
+				}
+
+			}
+			// We can have no more than 1 id left over.
+			if len(foundIDs) > 1 {
+				logger.LogIf(ctx, fmt.Errorf("%d ids left over, can only handle 1. Cannot continue", len(foundIDs)))
+				continue
+			}
+			// We are missing information from one disk, deduce its placement.
+			if len(foundIDs) == 1 {
+				// If an id was missing and we miss a metadata it should be safe to assume that it is correct
+				// so we do NOT update needsUpdate on purpose.
+				for diskID := range foundIDs {
+					for i, gotID := range wantDiskIDOrder {
+						if gotID != "" {
+							continue
+						}
+						if diskID == "" {
+							// Sanity check. Should not be possible, but check just in case.
+							logger.LogIf(ctx, fmt.Errorf("unexpected empty id idx %d", i))
+							break nextSet
+						}
+						wantDiskIDOrder[i] = diskID
+						logger.Info("assigned leftover id to disk %v", i)
+						diskID = ""
+					}
+				}
+			}
+			if !needsUpdate {
+				logger.Info("No update required")
+				continue
+			}
+			shouldRepair = true
+			logger.Info("want update: %v, new disk id order: %#v", needsUpdate, wantDiskIDOrder)
+			if !repair {
+				// If an id was missing and we miss a metadata it should be safe to assume that it is correct.
+				logger.Info("repair not requested")
+				continue
+			}
+
+			// Write back formats
+			for i, f := range formats {
+				f.Erasure.Sets[setIdx] = wantDiskIDOrder
+				logger.LogIf(ctx, saveFormatErasure(disks[i], f, false))
+			}
+			logger.Info("format.json written")
+		}
+	}
+	time.Sleep(5 * time.Second)
+	os.Exit(0)
 }

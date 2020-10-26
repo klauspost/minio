@@ -506,6 +506,12 @@ func serverMain(ctx *cli.Context) {
 		}
 	}
 
+	if os.Getenv("MINIO_DETECT_DRIVE_ORDER") != "" {
+		ssets, ok := newObjectLayerFn().(*erasureServerSets)
+		if ok {
+			detectDriveOrder(ssets, os.Getenv("MINIO_DETECT_DRIVE_ORDER") == "repair")
+		}
+	}
 	// Initialize users credentials and policies in background right after config has initialized.
 	go globalIAMSys.Init(GlobalContext, newObject)
 
