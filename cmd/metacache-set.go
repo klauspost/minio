@@ -339,6 +339,9 @@ func (er *erasureObjects) streamMetadataParts(ctx context.Context, o listPathOpt
 		default:
 		}
 
+		// retryDelay is the wait time between each retry to get updated file information.
+		const retryDelay = 200 * time.Millisecond
+
 		// Load first part metadata...
 		// All operations are performed without locks, so we must be careful and allow for failures.
 		fi, metaArr, onlineDisks, err := er.getObjectFileInfo(ctx, minioMetaBucket, o.objectPath(0), ObjectOptions{})
@@ -357,7 +360,7 @@ func (er *erasureObjects) streamMetadataParts(ctx context.Context, o listPathOpt
 					continue
 				}
 				retries++
-				time.Sleep(100 * time.Millisecond)
+				time.Sleep(retryDelay)
 				continue
 			}
 			if debugPrint {
@@ -386,7 +389,7 @@ func (er *erasureObjects) streamMetadataParts(ctx context.Context, o listPathOpt
 				continue
 			}
 			retries++
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(retryDelay)
 			continue
 		case io.EOF:
 			return entries, io.EOF
@@ -417,10 +420,10 @@ func (er *erasureObjects) streamMetadataParts(ctx context.Context, o listPathOpt
 						retries = 0
 						continue
 					}
-					time.Sleep(100 * time.Millisecond)
+					time.Sleep(retryDelay)
 					continue
 				default:
-					time.Sleep(100 * time.Millisecond)
+					time.Sleep(retryDelay)
 					if retries >= 20 {
 						// We had at least 10 retries without getting a result.
 						logger.LogIf(ctx, err)
@@ -452,7 +455,7 @@ func (er *erasureObjects) streamMetadataParts(ctx context.Context, o listPathOpt
 					return entries, err
 				}
 				retries++
-				time.Sleep(100 * time.Millisecond)
+				time.Sleep(retryDelay)
 				continue
 			default:
 				logger.LogIf(ctx, err)
