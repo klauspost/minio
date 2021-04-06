@@ -405,6 +405,8 @@ github.com/minio/selfupdate v0.3.1/go.mod h1:b8ThJzzH7u2MkF6PcIra7KaXO9Khf6alWPv
 github.com/minio/sha256-simd v0.1.1/go.mod h1:B5e1o+1/KgNmWrSQK08Y6Z1Vb5pwIktudl0J58iy0KM=
 github.com/minio/sha256-simd v1.0.0 h1:v1ta+49hkWZyvaKwrQB8elexRqm6Y0aMLjCNsrYxo6g=
 github.com/minio/sha256-simd v1.0.0/go.mod h1:OuYzVNI5vcoYIAmbIvHPl3N3jUzVedXbKy5RFepssQM=
+github.com/minio/simdcsv v0.0.0-20201106210441-730b0bcd9c94 h1:+1gAdXhnnOs5jDy9q+zFuxbH6Iml40mxXYApkmS2UCA=
+github.com/minio/simdcsv v0.0.0-20201106210441-730b0bcd9c94/go.mod h1:ZAiE+XtNsHyeWGq0b33CEQCYMe4ZhNobasvlDJo25/c=
 github.com/minio/simdjson-go v0.2.1 h1:nxYlp4Qd0w2pwLlif00l5vTFL6PcNAKpyHq27/pageg=
 github.com/minio/simdjson-go v0.2.1/go.mod h1:JPUSkRykfSPS+AhO0YPA1h0l5vY7NqrF4zel2b12wxc=
 github.com/minio/sio v0.2.1 h1:NjzKiIMSMcHediVQR0AFVx2tp7Wxh9tKPfDI3kH7aHQ=

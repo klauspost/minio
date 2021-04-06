@@ -50,6 +50,7 @@ require (
 	github.com/minio/minio-go/v7 v7.0.11-0.20210302210017-6ae69c73ce78
 	github.com/minio/selfupdate v0.3.1
 	github.com/minio/sha256-simd v1.0.0
+	github.com/minio/simdcsv v0.0.0-20201106210441-730b0bcd9c94 // indirect
 	github.com/minio/simdjson-go v0.2.1
 	github.com/minio/sio v0.2.1
 	github.com/mitchellh/go-homedir v1.1.0
@@ -89,4 +90,8 @@ require (
 	golang.org/x/tools v0.1.0 // indirect
 	google.golang.org/api v0.5.0
 	gopkg.in/yaml.v2 v2.3.0
+)
+
+replace (
+	github.com/minio/simdcsv v0.0.0-20201106210441-730b0bcd9c94 => e:\gopath\src\github.com\minio\simdcsv
 )

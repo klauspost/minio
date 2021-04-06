@@ -25,8 +25,8 @@ import (
 	"sync"
 	"unicode/utf8"
 
-	csv "github.com/minio/minio/pkg/csvparser"
 	"github.com/minio/minio/pkg/s3select/sql"
+	csv "github.com/minio/simdcsv"
 )
 
 // Reader - CSV record reader for S3Select.
@@ -146,7 +146,7 @@ func (r *Reader) nextSplit(skip int, dst []byte) ([]byte, error) {
 // csvSplitSize is the size of each block.
 // Blocks will read this much and find the first following newline.
 // 128KB appears to be a very reasonable default.
-const csvSplitSize = 128 << 10
+const csvSplitSize = 1 << 20
 
 // startReaders will read the header if needed and spin up a parser
 // and a number of workers based on GOMAXPROCS.
@@ -164,7 +164,7 @@ func (r *Reader) startReaders(newReader func(io.Reader) *csv.Reader) error {
 			return errInvalidTextEncodingError()
 		}
 		reader := newReader(bytes.NewReader(b))
-		record, err := reader.Read()
+		records, err := reader.ReadAll()
 		if err != nil {
 			r.err = err
 			if err != io.EOF {
@@ -173,10 +173,13 @@ func (r *Reader) startReaders(newReader func(io.Reader) *csv.Reader) error {
 			}
 			return err
 		}
+		if len(records) == 0 {
+			return io.EOF
+		}
 
 		if r.args.FileHeaderInfo == use {
 			// Copy column names since records will be reused.
-			columns := append(make([]string, 0, len(record)), record...)
+			columns := append(make([]string, 0, len(records[0])), records[0]...)
 			r.columnNames = columns
 		}
 	}
@@ -228,42 +231,16 @@ func (r *Reader) startReaders(newReader func(io.Reader) *csv.Reader) error {
 	}()
 
 	// Start parsers
-	for i := 0; i < runtime.GOMAXPROCS(0); i++ {
+	for i := 0; i < (runtime.GOMAXPROCS(0)+1)/2; i++ {
 		go func() {
 			for in := range r.input {
 				if len(in.input) == 0 {
 					in.dst <- nil
 					continue
 				}
-				dst, ok := r.csvDstPool.Get().([][]string)
-				if !ok {
-					dst = make([][]string, 0, 1000)
-				}
 
 				cr := newReader(bytes.NewBuffer(in.input))
-				all := dst[:0]
-				err := func() error {
-					// Read all records until EOF or another error.
-					for {
-						record, err := cr.Read()
-						if err == io.EOF {
-							return nil
-						}
-						if err != nil {
-							return errCSVParsingError(err)
-						}
-						var recDst []string
-						if len(dst) > len(all) {
-							recDst = dst[len(all)]
-						}
-						if cap(recDst) < len(record) {
-							recDst = make([]string, len(record))
-						}
-						recDst = recDst[:len(record)]
-						copy(recDst, record)
-						all = append(all, recDst)
-					}
-				}()
+				all, err := cr.ReadAll()
 				if err != nil {
 					in.err = err
 				}
@@ -305,10 +282,10 @@ func NewReader(readCloser io.ReadCloser, args *ReaderArgs) (*Reader, error) {
 		ret := csv.NewReader(r)
 		ret.Comma = []rune(args.FieldDelimiter)[0]
 		ret.Comment = []rune(args.CommentCharacter)[0]
-		ret.Quote = []rune{}
+		ret.Quote = 0
 		if len([]rune(args.QuoteCharacter)) > 0 {
 			// Add the first rune of args.QuoteChracter
-			ret.Quote = append(ret.Quote, []rune(args.QuoteCharacter)[0])
+			ret.Quote = []rune(args.QuoteCharacter)[0]
 		}
 		ret.QuoteEscape = []rune(args.QuoteEscapeCharacter)[0]
 		ret.FieldsPerRecord = -1

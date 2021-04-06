@@ -32,17 +32,18 @@ import (
 
 const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
-func newRandString(length int) string {
-	randSrc := rand.New(rand.NewSource(time.Now().UnixNano()))
+func newRandString(rng *rand.Rand, length int) string {
 
 	b := make([]byte, length)
 	for i := range b {
-		b[i] = charset[randSrc.Intn(len(charset))]
+		b[i] = charset[rng.Intn(len(charset))]
 	}
 	return string(b)
 }
 
 func genSampleCSVData(count int) []byte {
+	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+
 	buf := &bytes.Buffer{}
 	csvWriter := csv.NewWriter(buf)
 	csvWriter.Write([]string{"id", "name", "age", "city"})
@@ -50,9 +51,9 @@ func genSampleCSVData(count int) []byte {
 	for i := 0; i < count; i++ {
 		csvWriter.Write([]string{
 			strconv.Itoa(i),
-			newRandString(10),
-			newRandString(5),
-			newRandString(10),
+			newRandString(rng, 10),
+			newRandString(rng, 5),
+			newRandString(rng, 10),
 		})
 	}
 
