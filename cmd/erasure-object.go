@@ -301,6 +301,11 @@ func (er erasureObjects) getObjectWithFileInfo(ctx context.Context, bucket, obje
 			if !metaArr[index].IsValid() {
 				continue
 			}
+			// Ensure that datadir is correct.
+			if fi.DataDir != metaArr[index].DataDir {
+				onlineDisks[index] = OfflineDisk
+				continue
+			}
 			checksumInfo := metaArr[index].Erasure.GetChecksumInfo(partNumber)
 			partPath := pathJoin(object, metaArr[index].DataDir, fmt.Sprintf("part.%d", partNumber))
 			data := metaArr[index].Data
