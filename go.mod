@@ -55,6 +55,7 @@ require (
 	github.com/minio/highwayhash v1.0.2
 	github.com/minio/md5-simd v1.1.1 // indirect
 	github.com/minio/minio-go/v7 v7.0.11-0.20210302210017-6ae69c73ce78
+	github.com/minio/parquet-go v1.0.0 // indirect
 	github.com/minio/rpc v1.0.0
 	github.com/minio/selfupdate v0.3.1
 	github.com/minio/sha256-simd v1.0.0
@@ -71,7 +72,7 @@ require (
 	github.com/nsqio/go-nsq v1.0.8
 	github.com/olivere/elastic/v7 v7.0.22
 	github.com/philhofer/fwd v1.1.1
-	github.com/pierrec/lz4 v2.5.2+incompatible
+	github.com/pierrec/lz4 v2.6.0+incompatible
 	github.com/pkg/errors v0.9.1
 	github.com/prometheus/client_golang v1.8.0
 	github.com/prometheus/client_model v0.2.0
@@ -83,8 +84,8 @@ require (
 	github.com/spaolacci/murmur3 v1.1.0 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/streadway/amqp v1.0.0
-	github.com/tidwall/gjson v1.6.8
-	github.com/tidwall/sjson v1.0.4
+	github.com/tidwall/gjson v1.7.5
+	github.com/tidwall/sjson v1.1.6
 	github.com/tinylib/msgp v1.1.3
 	github.com/valyala/tcplisten v0.0.0-20161114210144-ceec8f93295a
 	github.com/willf/bitset v1.1.11 // indirect
