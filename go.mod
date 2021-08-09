@@ -30,6 +30,7 @@ require (
 	github.com/gomodule/redigo v2.0.0+incompatible
 	github.com/google/uuid v1.1.2
 	github.com/gorilla/mux v1.8.0
+	github.com/hashicorp/golang-lru v0.5.4 // indirect
 	github.com/jcmturner/gokrb5/v8 v8.4.2
 	github.com/json-iterator/go v1.1.11
 	github.com/klauspost/compress v1.13.1
