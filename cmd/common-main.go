@@ -116,10 +116,11 @@ const consolePrefix = "CONSOLE_"
 func minioConfigToConsoleFeatures() {
 	os.Setenv("CONSOLE_PBKDF_SALT", globalDeploymentID)
 	os.Setenv("CONSOLE_PBKDF_PASSPHRASE", globalDeploymentID)
-	if globalMinioEndpoint == "" {
-		logger.Fatal(errInvalidArgument, "Unable to start console service MinIO Endpoint is empty")
+	if globalMinioEndpoint != "" {
+		os.Setenv("CONSOLE_MINIO_SERVER", globalMinioEndpoint)
+	} else {
+		os.Setenv("CONSOLE_MINIO_SERVER", getAPIEndpoints()[0])
 	}
-	os.Setenv("CONSOLE_MINIO_SERVER", globalMinioEndpoint)
 	if value := env.Get("MINIO_LOG_QUERY_URL", ""); value != "" {
 		os.Setenv("CONSOLE_LOG_QUERY_URL", value)
 		if value := env.Get("MINIO_LOG_QUERY_AUTH_TOKEN", ""); value != "" {
@@ -214,11 +215,6 @@ func initConsoleServer() (*restapi.Server, error) {
 }
 
 func verifyObjectLayerFeatures(name string, objAPI ObjectLayer) {
-	if (GlobalKMS != nil) && !objAPI.IsEncryptionSupported() {
-		logger.Fatal(errInvalidArgument,
-			"Encryption support is requested but '%s' does not support encryption", name)
-	}
-
 	if strings.HasPrefix(name, "gateway") {
 		if GlobalGatewaySSE.IsSet() && GlobalKMS == nil {
 			uiErr := config.ErrInvalidGWSSEEnvValue(nil).Msg("MINIO_GATEWAY_SSE set but KMS is not configured")
@@ -419,7 +415,7 @@ func handleCommonEnvVars() {
 		}
 	}
 
-	if serverURL := env.Get(config.EnvMinIOServerURL, globalEndpoints.Localhost()); serverURL != "" {
+	if serverURL := env.Get(config.EnvMinIOServerURL, ""); serverURL != "" {
 		u, err := xnet.ParseHTTPURL(serverURL)
 		if err != nil {
 			logger.Fatal(err, "Invalid MINIO_SERVER_URL value in environment variable")
