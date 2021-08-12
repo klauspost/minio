@@ -78,7 +78,7 @@ func checkXL2V1(buf []byte) (payload []byte, major, minor uint16, err error) {
 	} else {
 		major, minor = binary.LittleEndian.Uint16(buf[4:6]), binary.LittleEndian.Uint16(buf[6:8])
 	}
-	if major > xlVersionMajor {
+	if major == 0 || major > xlVersionMajor {
 		return buf[8:], major, minor, fmt.Errorf("xlMeta: unknown major version %d found", major)
 	}
 
@@ -603,7 +603,7 @@ func (x *xlMetaInlineData) remove(keys ...string) bool {
 // xlMetaV2TrimData will trim any data from the metadata without unmarshalling it.
 // If any error occurs the unmodified data is returned.
 func xlMetaV2TrimData(buf []byte) []byte {
-	metaBuf, min, maj, err := checkXL2V1(buf)
+	metaBuf, maj, min, err := checkXL2V1(buf)
 	if err != nil {
 		return buf
 	}

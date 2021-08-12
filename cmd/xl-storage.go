@@ -393,6 +393,9 @@ func (s *xlStorage) Healing() *healingTracker {
 }
 
 func (s *xlStorage) readMetadata(itemPath string) ([]byte, error) {
+	if v, ok := globalMemMetaCache.getPath(itemPath); ok {
+		return v, nil
+	}
 	f, err := OpenFile(itemPath, readMode, 0)
 	if err != nil {
 		return nil, err
@@ -402,7 +405,11 @@ func (s *xlStorage) readMetadata(itemPath string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return readXLMetaNoData(f, stat.Size())
+	b, err := readXLMetaNoData(f, stat.Size())
+	if err == nil {
+		globalMemMetaCache.setPath(itemPath, b)
+	}
+	return b, err
 }
 
 func (s *xlStorage) NSScanner(ctx context.Context, cache dataUsageCache, updates chan<- dataUsageEntry) (dataUsageCache, error) {
@@ -891,21 +898,23 @@ func (s *xlStorage) DeleteVersion(ctx context.Context, volume, path string, fi F
 			}
 		}
 	}
+	fp := pathJoin(path, xlStorageFormatFile)
 	if !lastVersion {
 		buf, err = xlMeta.AppendTo(nil)
 		if err != nil {
 			return err
 		}
-
-		return s.WriteAll(ctx, volume, pathJoin(path, xlStorageFormatFile), buf)
+		globalMemMetaCache.set(volumeDir, fp, buf)
+		return s.WriteAll(ctx, volume, fp, buf)
 	}
 
 	// Move xl.meta to trash
-	filePath := pathJoin(volumeDir, path, xlStorageFormatFile)
+	filePath := pathJoin(volumeDir, fp)
 	if err = checkPathLength(filePath); err != nil {
 		return err
 	}
 
+	globalMemMetaCache.remove(volumeDir, fp)
 	err = Rename(filePath, pathutil.Join(s.diskPath, minioMetaTmpDeletedBucket, mustGetUUID()))
 	if err == nil || err == errFileNotFound {
 		s.deleteFile(volumeDir, pathJoin(volumeDir, path), false)
@@ -947,8 +956,11 @@ func (s *xlStorage) UpdateMetadata(ctx context.Context, volume, path string, fi 
 	if err != nil {
 		return err
 	}
-
-	return s.WriteAll(ctx, volume, pathJoin(path, xlStorageFormatFile), buf)
+	fp := pathJoin(path, xlStorageFormatFile)
+	if vd, err := s.getVolDir(volume); err == nil {
+		globalMemMetaCache.set(vd, fp, buf)
+	}
+	return s.WriteAll(ctx, volume, fp, buf)
 }
 
 // WriteMetadata - writes FileInfo metadata for path at `xl.meta`
@@ -988,8 +1000,11 @@ func (s *xlStorage) WriteMetadata(ctx context.Context, volume, path string, fi F
 			return err
 		}
 	}
-
-	return s.WriteAll(ctx, volume, pathJoin(path, xlStorageFormatFile), buf)
+	fp := pathJoin(path, xlStorageFormatFile)
+	if vd, err := s.getVolDir(volume); err == nil {
+		globalMemMetaCache.set(fp, vd, buf)
+	}
+	return s.WriteAll(ctx, volume, fp, buf)
 }
 
 func (s *xlStorage) renameLegacyMetadata(volumeDir, path string) (err error) {
@@ -1050,8 +1065,15 @@ func (s *xlStorage) ReadVersion(ctx context.Context, volume, path, versionID str
 	if err != nil {
 		return fi, err
 	}
-
-	buf, err := s.ReadAll(ctx, volume, pathJoin(path, xlStorageFormatFile))
+	var buf []byte
+	if !readData {
+		buf, err = s.readMetadata(pathJoin(volumeDir, path, xlStorageFormatFile))
+		if err != nil {
+			err = osErrToFileErr(err)
+		}
+	} else {
+		buf, err = s.ReadAll(ctx, volume, pathJoin(path, xlStorageFormatFile))
+	}
 	if err != nil {
 		if err == errFileNotFound {
 			if err = s.renameLegacyMetadata(volumeDir, path); err != nil {
@@ -2029,6 +2051,7 @@ func (s *xlStorage) RenameData(ctx context.Context, srcVolume, srcPath string, f
 			logger.LogIf(ctx, err)
 			return osErrToFileErr(err)
 		}
+		globalMemMetaCache.setPath(dstFilePath, dstBuf)
 
 		// additionally only purge older data at the end of the transaction of new data-dir
 		// movement, this is to ensure that previous data references can co-exist for
@@ -2048,6 +2071,7 @@ func (s *xlStorage) RenameData(ctx context.Context, srcVolume, srcPath string, f
 			logger.LogIf(ctx, err)
 			return err
 		}
+		globalMemMetaCache.setPath(dstFilePath, dstBuf)
 	}
 
 	// srcFilePath is always in minioMetaTmpBucket, an attempt to

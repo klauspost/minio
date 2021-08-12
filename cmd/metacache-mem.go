@@ -18,8 +18,11 @@
 package cmd
 
 import (
+	"fmt"
 	"hash"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	lru "github.com/hashicorp/golang-lru"
 	"golang.org/x/crypto/blake2b"
@@ -31,8 +34,13 @@ type memMetaCacheKey [32]byte
 
 const (
 	memMetaCacheMaxMem  = 2 << 30
-	memMetaCacheMaxSize = 8 << 10
+	memMetaCacheMaxSize = 4 << 10
 	memMetaCacheEntries = memMetaCacheMaxMem / (memMetaCacheMaxSize)
+)
+
+var (
+	hits   int32
+	misses int32
 )
 
 func newMemMetaCache() *memMetaCache {
@@ -40,6 +48,16 @@ func newMemMetaCache() *memMetaCache {
 	if err != nil {
 		return nil
 	}
+	go func() {
+		t := time.NewTicker(5 * time.Second)
+		for {
+			select {
+			case <-t.C:
+				h, m := atomic.LoadInt32(&hits), atomic.LoadInt32(&misses)
+				fmt.Printf("hits: %d, misses: %d, size:%d.\n", h, m, c.Len())
+			}
+		}
+	}()
 	return &memMetaCache{data: c}
 }
 
@@ -47,31 +65,66 @@ type memMetaCache struct {
 	data *lru.TwoQueueCache // Replace with more efficient storage once tested.
 }
 
-func (m *memMetaCache) getMetadata(file string) (data []byte, ok bool) {
+func (m *memMetaCache) get(volumeDir, file string) (data []byte, ok bool) {
 	if m == nil {
+		atomic.AddInt32(&misses, 1)
+		return nil, false
+	}
+	return m.getPath(pathJoin(volumeDir, file))
+}
+
+func (m *memMetaCache) getPath(file string) (data []byte, ok bool) {
+	if m == nil {
+		atomic.AddInt32(&misses, 1)
 		return nil, false
 	}
 	if b, ok := m.data.Get(hashFileName(file)); ok {
+		atomic.AddInt32(&hits, 1)
+		//fmt.Println("getPath", file)
 		return b.([]byte), true
 	}
+	atomic.AddInt32(&misses, 1)
 	return nil, false
 }
 
-func (m *memMetaCache) setMetadata(file string, data []byte) {
-	if m == nil || len(data) > memMetaCacheMaxSize {
+func (m *memMetaCache) setPath(filepath string, data []byte) {
+	if m == nil {
 		return
 	}
-	m.data.Add(hashFileName(file), data)
+	data = xlMetaV2TrimData(data)
+	if len(data) > memMetaCacheMaxSize {
+		return
+	}
+	//fmt.Println("setPath", filepath)
+	m.data.Add(hashFileName(filepath), data)
 }
 
-func (m *memMetaCache) existsMetadata(file string) (ok bool) {
+func (m *memMetaCache) set(volumeDir, file string, data []byte) {
+	if m == nil {
+		return
+	}
+	data = xlMetaV2TrimData(data)
+	if len(data) > memMetaCacheMaxSize {
+		return
+	}
+	//fmt.Println("set", pathJoin(volumeDir, file))
+	m.data.Add(hashFileName(pathJoin(volumeDir, file)), data)
+}
+
+func (m *memMetaCache) remove(volumeDir, file string) {
+	if m == nil {
+		return
+	}
+	m.data.Remove(hashFileName(pathJoin(volumeDir, file)))
+}
+func (m *memMetaCache) exists(volumeDir, file string) (ok bool) {
 	if m == nil {
 		return false
 	}
-	return m.data.Contains(hashFileName(file))
+	return m.data.Contains(hashFileName(pathJoin(volumeDir, file)))
 }
 
-func (m *memMetaCache) renameMetadata(dst, src string) {
+func (m *memMetaCache) rename(dst, src string) {
 	if m == nil {
 		return
 	}
