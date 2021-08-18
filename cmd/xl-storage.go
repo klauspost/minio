@@ -866,6 +866,7 @@ func (s *xlStorage) DeleteVersion(ctx context.Context, volume, path string, fi F
 	if !isXL2V1Format(buf) {
 		// Delete the meta file, if there are no more versions the
 		// top level parent is automatically removed.
+		globalMemMetaCache.remove(volumeDir, pathJoin(path, xlStorageFormatFile))
 		return s.deleteFile(volumeDir, pathJoin(volumeDir, path), true)
 	}
 
