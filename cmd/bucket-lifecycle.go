@@ -24,9 +24,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -84,6 +84,11 @@ type expiryState struct {
 	expiryCh chan expiryTask
 }
 
+// PendingTasks returns the number of pending ILM expiry tasks.
+func (es *expiryState) PendingTasks() int {
+	return len(es.expiryCh)
+}
+
 func (es *expiryState) queueExpiryTask(oi ObjectInfo, rmVersion bool) {
 	select {
 	case <-GlobalContext.Done():
@@ -115,9 +120,16 @@ func initBackgroundExpiry(ctx context.Context, objectAPI ObjectLayer) {
 }
 
 type transitionState struct {
-	once sync.Once
-	// add future metrics here
+	once         sync.Once
 	transitionCh chan ObjectInfo
+
+	ctx        context.Context
+	objAPI     ObjectLayer
+	mu         sync.Mutex
+	numWorkers int
+	killCh     chan struct{}
+
+	activeTasks int32
 }
 
 func (t *transitionState) queueTransitionTask(oi ObjectInfo) {
@@ -132,50 +144,71 @@ func (t *transitionState) queueTransitionTask(oi ObjectInfo) {
 }
 
 var (
-	globalTransitionState      *transitionState
-	globalTransitionConcurrent = runtime.GOMAXPROCS(0) / 2
+	globalTransitionState *transitionState
 )
 
-func newTransitionState() *transitionState {
-	// fix minimum concurrent transition to 1 for single CPU setup
-	if globalTransitionConcurrent == 0 {
-		globalTransitionConcurrent = 1
-	}
+func newTransitionState(ctx context.Context, objAPI ObjectLayer) *transitionState {
 	return &transitionState{
 		transitionCh: make(chan ObjectInfo, 10000),
+		ctx:          ctx,
+		objAPI:       objAPI,
+		killCh:       make(chan struct{}),
 	}
 }
 
-// addWorker creates a new worker to process tasks
-func (t *transitionState) addWorker(ctx context.Context, objectAPI ObjectLayer) {
-	// Add a new worker.
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case oi, ok := <-t.transitionCh:
-				if !ok {
-					return
-				}
+// PendingTasks returns the number of ILM transition tasks waiting for a worker
+// goroutine.
+func (t *transitionState) PendingTasks() int {
+	return len(globalTransitionState.transitionCh)
+}
 
-				if err := transitionObject(ctx, objectAPI, oi); err != nil {
-					logger.LogIf(ctx, fmt.Errorf("Transition failed for %s/%s version:%s with %w", oi.Bucket, oi.Name, oi.VersionID, err))
-				}
+// ActiveTasks returns the number of active (ongoing) ILM transition tasks.
+func (t *transitionState) ActiveTasks() int {
+	return int(atomic.LoadInt32(&t.activeTasks))
+}
+
+// worker waits for transition tasks
+func (t *transitionState) worker(ctx context.Context, objectAPI ObjectLayer) {
+	for {
+		select {
+		case <-t.killCh:
+			return
+		case <-ctx.Done():
+			return
+		case oi, ok := <-t.transitionCh:
+			if !ok {
+				return
 			}
+			atomic.AddInt32(&t.activeTasks, 1)
+			if err := transitionObject(ctx, objectAPI, oi); err != nil {
+				logger.LogIf(ctx, fmt.Errorf("Transition failed for %s/%s version:%s with %w", oi.Bucket, oi.Name, oi.VersionID, err))
+			}
+			atomic.AddInt32(&t.activeTasks, -1)
 		}
-	}()
+	}
+}
+
+// UpdateWorkers at the end of this function leaves n goroutines waiting for
+// transition tasks
+func (t *transitionState) UpdateWorkers(n int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	for t.numWorkers < n {
+		go t.worker(t.ctx, t.objAPI)
+		t.numWorkers++
+	}
+
+	for t.numWorkers > n {
+		go func() { t.killCh <- struct{}{} }()
+		t.numWorkers--
+	}
 }
 
 func initBackgroundTransition(ctx context.Context, objectAPI ObjectLayer) {
-	if globalTransitionState == nil {
-		return
-	}
-
-	// Start with globalTransitionConcurrent.
-	for i := 0; i < globalTransitionConcurrent; i++ {
-		globalTransitionState.addWorker(ctx, objectAPI)
-	}
+	globalTransitionState = newTransitionState(ctx, objectAPI)
+	n := globalAPIConfig.getTransitionWorkers()
+	globalTransitionState.UpdateWorkers(n)
 }
 
 var errInvalidStorageClass = errors.New("invalid storage class")
@@ -219,9 +252,9 @@ func expireTransitionedObject(ctx context.Context, objectAPI ObjectLayer, oi *Ob
 		// When an object is past expiry or when a transitioned object is being
 		// deleted, 'mark' the data in the remote tier for delete.
 		entry := jentry{
-			ObjName:   oi.transitionedObjName,
-			VersionID: oi.transitionVersionID,
-			TierName:  oi.TransitionTier,
+			ObjName:   oi.TransitionedObject.Name,
+			VersionID: oi.TransitionedObject.VersionID,
+			TierName:  oi.TransitionedObject.Tier,
 		}
 		if err := globalTierJournal.AddEntry(entry); err != nil {
 			logger.LogIf(ctx, err)
@@ -303,7 +336,7 @@ func transitionObject(ctx context.Context, objectAPI ObjectLayer, oi ObjectInfo)
 
 // getTransitionedObjectReader returns a reader from the transitioned tier.
 func getTransitionedObjectReader(ctx context.Context, bucket, object string, rs *HTTPRangeSpec, h http.Header, oi ObjectInfo, opts ObjectOptions) (gr *GetObjectReader, err error) {
-	tgtClient, err := globalTierConfigMgr.getDriver(oi.TransitionTier)
+	tgtClient, err := globalTierConfigMgr.getDriver(oi.TransitionedObject.Tier)
 	if err != nil {
 		return nil, fmt.Errorf("transition storage class not configured")
 	}
@@ -320,7 +353,7 @@ func getTransitionedObjectReader(ctx context.Context, bucket, object string, rs 
 		gopts.length = length
 	}
 
-	reader, err := tgtClient.Get(ctx, oi.transitionedObjName, remoteVersionID(oi.transitionVersionID), gopts)
+	reader, err := tgtClient.Get(ctx, oi.TransitionedObject.Name, remoteVersionID(oi.TransitionedObject.VersionID), gopts)
 	if err != nil {
 		return nil, err
 	}
@@ -544,7 +577,7 @@ func (fi FileInfo) IsRemote() bool {
 // IsRemote returns true if this object version's contents are in its remote
 // tier.
 func (oi ObjectInfo) IsRemote() bool {
-	if oi.TransitionStatus != lifecycle.TransitionComplete {
+	if oi.TransitionedObject.Status != lifecycle.TransitionComplete {
 		return false
 	}
 	return !isRestoredObjectOnDisk(oi.UserDefined)
@@ -672,7 +705,7 @@ func (oi ObjectInfo) ToLifecycleOpts() lifecycle.ObjectOpts {
 		SuccessorModTime:       oi.SuccessorModTime,
 		RestoreOngoing:         oi.RestoreOngoing,
 		RestoreExpires:         oi.RestoreExpires,
-		TransitionStatus:       oi.TransitionStatus,
+		TransitionStatus:       oi.TransitionedObject.Status,
 		RemoteTiersImmediately: globalDebugRemoteTiersImmediately,
 	}
 }

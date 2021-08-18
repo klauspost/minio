@@ -56,10 +56,11 @@ const metacacheStreamVersion = 2
 
 // metacacheWriter provides a serializer of metacache objects.
 type metacacheWriter struct {
-	mw        *msgp.Writer
-	creator   func() error
-	closer    func() error
-	blockSize int
+	mw          *msgp.Writer
+	creator     func() error
+	closer      func() error
+	blockSize   int
+	reuseBlocks bool
 
 	streamErr error
 	streamWg  sync.WaitGroup
@@ -140,6 +141,11 @@ func (w *metacacheWriter) write(objs ...metaCacheEntry) error {
 		err = w.mw.WriteBytes(o.metadata)
 		if err != nil {
 			return err
+		}
+		if w.reuseBlocks || o.reusable {
+			if cap(o.metadata) >= metaDataReadDefault && cap(o.metadata) < metaDataReadDefault*4 {
+				metaDataPool.Put(o.metadata)
+			}
 		}
 	}
 
@@ -354,9 +360,13 @@ func (r *metacacheReader) next() (metaCacheEntry, error) {
 		r.err = err
 		return m, err
 	}
-	m.metadata, err = r.mr.ReadBytes(nil)
+	m.metadata, err = r.mr.ReadBytes(metaDataPool.Get().([]byte)[:0])
 	if err == io.EOF {
 		err = io.ErrUnexpectedEOF
+	}
+	if len(m.metadata) == 0 && cap(m.metadata) >= metaDataReadDefault {
+		metaDataPool.Put(m.metadata)
+		m.metadata = nil
 	}
 	r.err = err
 	return m, err
@@ -510,12 +520,16 @@ func (r *metacacheReader) readN(n int, inclDeleted, inclDirs bool, prefix string
 			r.mr.R.Skip(1)
 			return metaCacheEntriesSorted{o: res}, io.EOF
 		}
-		if meta.metadata, err = r.mr.ReadBytes(nil); err != nil {
+		if meta.metadata, err = r.mr.ReadBytes(metaDataPool.Get().([]byte)[:0]); err != nil {
 			if err == io.EOF {
 				err = io.ErrUnexpectedEOF
 			}
 			r.err = err
 			return metaCacheEntriesSorted{o: res}, err
+		}
+		if len(meta.metadata) == 0 && cap(meta.metadata) >= metaDataReadDefault {
+			metaDataPool.Put(meta.metadata)
+			meta.metadata = nil
 		}
 		if !inclDirs && meta.isDir() {
 			continue
@@ -565,12 +579,16 @@ func (r *metacacheReader) readAll(ctx context.Context, dst chan<- metaCacheEntry
 			r.err = err
 			return err
 		}
-		if meta.metadata, err = r.mr.ReadBytes(nil); err != nil {
+		if meta.metadata, err = r.mr.ReadBytes(metaDataPool.Get().([]byte)[:0]); err != nil {
 			if err == io.EOF {
 				err = io.ErrUnexpectedEOF
 			}
 			r.err = err
 			return err
+		}
+		if len(meta.metadata) == 0 && cap(meta.metadata) >= metaDataReadDefault {
+			metaDataPool.Put(meta.metadata)
+			meta.metadata = nil
 		}
 		select {
 		case <-ctx.Done():

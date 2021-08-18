@@ -256,26 +256,6 @@ func (er erasureObjects) getObjectWithFileInfo(ctx context.Context, bucket, obje
 		return toObjectErr(err, bucket, object)
 	}
 
-	// This hack is needed to avoid a bug found when overwriting
-	// the inline data object with a un-inlined version, for the
-	// time being we need this as we have released inline-data
-	// version already and this bug is already present in newer
-	// releases.
-	//
-	// This mainly happens with objects < smallFileThreshold when
-	// they are overwritten with un-inlined objects >= smallFileThreshold,
-	// due to a bug in RenameData() the fi.Data is not niled leading to
-	// GetObject thinking that fi.Data is valid while fi.Size has
-	// changed already.
-	if fi.InlineData() {
-		shardFileSize := erasure.ShardFileSize(fi.Size)
-		if shardFileSize >= 0 && shardFileSize >= smallFileThreshold {
-			for i := range metaArr {
-				metaArr[i].Data = nil
-			}
-		}
-	}
-
 	var healOnce sync.Once
 
 	// once we have obtained a common FileInfo i.e latest, we should stick
@@ -677,11 +657,7 @@ func (er erasureObjects) putMetacacheObject(ctx context.Context, key string, r *
 			onlineDisks[i] = nil
 			continue
 		}
-		if len(inlineBuffers) > 0 && inlineBuffers[i] != nil {
-			partsMetadata[i].Data = inlineBuffers[i].Bytes()
-		} else {
-			partsMetadata[i].Data = nil
-		}
+		partsMetadata[i].Data = inlineBuffers[i].Bytes()
 		partsMetadata[i].AddObjectPart(1, "", n, data.ActualSize())
 		partsMetadata[i].Erasure.AddChecksumInfo(ChecksumInfo{
 			PartNumber: 1,
@@ -695,9 +671,10 @@ func (er erasureObjects) putMetacacheObject(ctx context.Context, key string, r *
 	// Fill all the necessary metadata.
 	// Update `xl.meta` content on each disks.
 	for index := range partsMetadata {
-		partsMetadata[index].Metadata = opts.UserDefined
 		partsMetadata[index].Size = n
+		partsMetadata[index].Fresh = true
 		partsMetadata[index].ModTime = modTime
+		partsMetadata[index].Metadata = opts.UserDefined
 	}
 
 	// Set an additional header when data is inlined.
@@ -714,33 +691,11 @@ func (er erasureObjects) putMetacacheObject(ctx context.Context, key string, r *
 		}
 	}
 
-	g := errgroup.WithNErrs(len(onlineDisks))
-
-	// Rename file on all underlying storage disks.
-	for index := range onlineDisks {
-		index := index
-		g.Go(func() error {
-			if onlineDisks[index] == nil {
-				return errDiskNotFound
-			}
-			// Pick one FileInfo for a disk at index.
-			fi := partsMetadata[index]
-			// Assign index when index is initialized
-			if fi.Erasure.Index == 0 {
-				fi.Erasure.Index = index + 1
-			}
-
-			if fi.IsValid() {
-				return onlineDisks[index].WriteMetadata(ctx, minioMetaBucket, key, fi)
-			}
-			return errFileCorrupt
-		}, index)
+	if _, err = writeUniqueFileInfo(ctx, onlineDisks, minioMetaBucket, key, partsMetadata, writeQuorum); err != nil {
+		return ObjectInfo{}, toObjectErr(err, minioMetaBucket, key)
 	}
 
-	// Wait for all renames to finish.
-	errs := g.Wait()
-
-	return fi.ToObjectInfo(minioMetaBucket, key), reduceWriteQuorumErrs(ctx, errs, objectOpIgnoredErrs, writeQuorum)
+	return fi.ToObjectInfo(minioMetaBucket, key), nil
 }
 
 // PutObject - creates an object upon reading from the input stream
@@ -894,6 +849,15 @@ func (er erasureObjects) putObject(ctx context.Context, bucket string, object st
 		} else if shardFileSize < smallFileThreshold/8 {
 			inlineBuffers = make([]*bytes.Buffer, len(onlineDisks))
 		}
+	} else {
+		// If compressed, use actual size to determine.
+		if sz := erasure.ShardFileSize(data.ActualSize()); sz > 0 {
+			if !opts.Versioned && sz < smallFileThreshold {
+				inlineBuffers = make([]*bytes.Buffer, len(onlineDisks))
+			} else if sz < smallFileThreshold/8 {
+				inlineBuffers = make([]*bytes.Buffer, len(onlineDisks))
+			}
+		}
 	}
 	for i, disk := range onlineDisks {
 		if disk == nil {
@@ -901,7 +865,11 @@ func (er erasureObjects) putObject(ctx context.Context, bucket string, object st
 		}
 
 		if len(inlineBuffers) > 0 {
-			inlineBuffers[i] = bytes.NewBuffer(make([]byte, 0, shardFileSize))
+			sz := shardFileSize
+			if sz < 0 {
+				sz = data.ActualSize()
+			}
+			inlineBuffers[i] = bytes.NewBuffer(make([]byte, 0, sz))
 			writers[i] = newStreamingBitrotWriterBuffer(inlineBuffers[i], DefaultBitrotAlgorithm, erasure.ShardSize())
 			continue
 		}
@@ -1097,6 +1065,7 @@ func (er erasureObjects) DeleteObjects(ctx context.Context, bucket string, objec
 					DeleteMarkerReplicationStatus: objects[i].DeleteMarkerReplicationStatus,
 					VersionPurgeStatus:            objects[i].VersionPurgeStatus,
 				}
+				versions[i].SetTierFreeVersionID(mustGetUUID())
 				if opts.Versioned {
 					versions[i].VersionID = uuid
 				}

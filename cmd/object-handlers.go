@@ -1372,12 +1372,14 @@ func (api objectAPIHandlers) CopyObjectHandler(w http.ResponseWriter, r *http.Re
 		objInfo.ModTime = remoteObjInfo.LastModified
 	} else {
 
-		os := newObjSweeper(dstBucket, dstObject)
+		os := newObjSweeper(dstBucket, dstObject).WithVersioning(dstOpts.Versioned, dstOpts.VersionSuspended)
 		// Get appropriate object info to identify the remote object to delete
 		if !srcInfo.metadataOnly {
 			goiOpts := os.GetOpts()
-			if goi, gerr := getObjectInfo(ctx, dstBucket, dstObject, goiOpts); gerr == nil {
-				os.SetTransitionState(goi)
+			if !globalTierConfigMgr.Empty() {
+				if goi, gerr := getObjectInfo(ctx, dstBucket, dstObject, goiOpts); gerr == nil {
+					os.SetTransitionState(goi.TransitionedObject)
+				}
 			}
 		}
 
@@ -1395,8 +1397,11 @@ func (api objectAPIHandlers) CopyObjectHandler(w http.ResponseWriter, r *http.Re
 		}
 
 		// Remove the transitioned object whose object version is being overwritten.
-		logger.LogIf(ctx, os.Sweep())
+		if !globalTierConfigMgr.Empty() {
+			logger.LogIf(ctx, os.Sweep())
+		}
 	}
+
 	objInfo.ETag = getDecryptedETag(r.Header, objInfo, false)
 	response := generateCopyObjectResponse(objInfo.ETag, objInfo.ModTime)
 	encodedSuccessResponse := encodeResponse(response)
@@ -1684,11 +1689,13 @@ func (api objectAPIHandlers) PutObjectHandler(w http.ResponseWriter, r *http.Req
 	// Ensure that metadata does not contain sensitive information
 	crypto.RemoveSensitiveEntries(metadata)
 
-	oc := newObjSweeper(bucket, object)
-	// Get appropriate object info to identify the remote object to delete
-	goiOpts := oc.GetOpts()
-	if goi, gerr := getObjectInfo(ctx, bucket, object, goiOpts); gerr == nil {
-		oc.SetTransitionState(goi)
+	os := newObjSweeper(bucket, object).WithVersioning(opts.Versioned, opts.VersionSuspended)
+	if !globalTierConfigMgr.Empty() {
+		// Get appropriate object info to identify the remote object to delete
+		goiOpts := os.GetOpts()
+		if goi, gerr := getObjectInfo(ctx, bucket, object, goiOpts); gerr == nil {
+			os.SetTransitionState(goi.TransitionedObject)
+		}
 	}
 
 	// Create the object..
@@ -1735,9 +1742,6 @@ func (api objectAPIHandlers) PutObjectHandler(w http.ResponseWriter, r *http.Req
 		scheduleReplication(ctx, objInfo.Clone(), objectAPI, sync, replication.ObjectReplicationType)
 	}
 
-	// Remove the transitioned object whose object version is being overwritten.
-	logger.LogIf(ctx, oc.Sweep())
-
 	setPutObjHeaders(w, objInfo, false)
 
 	writeSuccessResponseHeadersOnly(w)
@@ -1752,6 +1756,11 @@ func (api objectAPIHandlers) PutObjectHandler(w http.ResponseWriter, r *http.Req
 		UserAgent:    r.UserAgent(),
 		Host:         handlers.GetSourceIP(r),
 	})
+
+	// Remove the transitioned object whose object version is being overwritten.
+	if !globalTierConfigMgr.Empty() {
+		logger.LogIf(ctx, os.Sweep())
+	}
 }
 
 // PutObjectExtractHandler - PUT Object extract is an extended API
@@ -3060,11 +3069,15 @@ func (api objectAPIHandlers) CompleteMultipartUploadHandler(w http.ResponseWrite
 		w.(http.Flusher).Flush()
 	}
 
-	os := newObjSweeper(bucket, object)
-	// Get appropriate object info to identify the remote object to delete
-	goiOpts := os.GetOpts()
-	if goi, gerr := objectAPI.GetObjectInfo(ctx, bucket, object, goiOpts); gerr == nil {
-		os.SetTransitionState(goi)
+	versioned := globalBucketVersioningSys.Enabled(bucket)
+	suspended := globalBucketVersioningSys.Suspended(bucket)
+	os := newObjSweeper(bucket, object).WithVersioning(versioned, suspended)
+	if !globalTierConfigMgr.Empty() {
+		// Get appropriate object info to identify the remote object to delete
+		goiOpts := os.GetOpts()
+		if goi, gerr := objectAPI.GetObjectInfo(ctx, bucket, object, goiOpts); gerr == nil {
+			os.SetTransitionState(goi.TransitionedObject)
+		}
 	}
 
 	setEventStreamHeaders(w)
@@ -3118,9 +3131,6 @@ func (api objectAPIHandlers) CompleteMultipartUploadHandler(w http.ResponseWrite
 		scheduleReplication(ctx, objInfo.Clone(), objectAPI, sync, replication.ObjectReplicationType)
 	}
 
-	// Remove the transitioned object whose object version is being overwritten.
-	logger.LogIf(ctx, os.Sweep())
-
 	// Write success response.
 	writeSuccessResponseXML(w, encodedSuccessResponse)
 
@@ -3134,6 +3144,11 @@ func (api objectAPIHandlers) CompleteMultipartUploadHandler(w http.ResponseWrite
 		UserAgent:    r.UserAgent(),
 		Host:         handlers.GetSourceIP(r),
 	})
+
+	// Remove the transitioned object whose object version is being overwritten.
+	if !globalTierConfigMgr.Empty() {
+		logger.LogIf(ctx, os.Sweep())
+	}
 }
 
 /// Delete objectAPIHandlers
@@ -3163,11 +3178,6 @@ func (api objectAPIHandlers) DeleteObjectHandler(w http.ResponseWriter, r *http.
 		return
 	}
 
-	getObjectInfo := objectAPI.GetObjectInfo
-	if api.CacheAPI() != nil {
-		getObjectInfo = api.CacheAPI().GetObjectInfo
-	}
-
 	if globalDNSConfig != nil {
 		_, err := globalDNSConfig.Get(bucket)
 		if err != nil && err != dns.ErrNotImplemented {
@@ -3186,16 +3196,20 @@ func (api objectAPIHandlers) DeleteObjectHandler(w http.ResponseWriter, r *http.
 		gerr error
 	)
 
-	var goiOpts ObjectOptions
-	os := newObjSweeper(bucket, object).WithVersion(singleDelete(*r))
+	getObjectInfo := objectAPI.GetObjectInfo
+	if api.CacheAPI() != nil {
+		getObjectInfo = api.CacheAPI().GetObjectInfo
+	}
+
+	os := newObjSweeper(bucket, object).WithVersion(opts.VersionID).WithVersioning(opts.Versioned, opts.VersionSuspended)
 	// Mutations of objects on versioning suspended buckets
 	// affect its null version. Through opts below we select
 	// the null version's remote object to delete if
 	// transitioned.
-	goiOpts = os.GetOpts()
+	goiOpts := os.GetOpts()
 	goi, gerr = getObjectInfo(ctx, bucket, object, goiOpts)
 	if gerr == nil {
-		os.SetTransitionState(goi)
+		os.SetTransitionState(goi.TransitionedObject)
 	}
 
 	replicateDel, replicateSync := checkReplicateDelete(ctx, bucket, ObjectToDelete{ObjectName: object, VersionID: opts.VersionID}, goi, gerr)
@@ -3308,8 +3322,9 @@ func (api objectAPIHandlers) DeleteObjectHandler(w http.ResponseWriter, r *http.
 	}
 
 	// Remove the transitioned object whose object version is being overwritten.
-	logger.LogIf(ctx, os.Sweep())
-
+	if !globalTierConfigMgr.Empty() {
+		os.Sweep()
+	}
 }
 
 // PutObjectLegalHoldHandler - set legal hold configuration to object,
@@ -3502,7 +3517,7 @@ func (api objectAPIHandlers) PutObjectRetentionHandler(w http.ResponseWriter, r 
 		return
 	}
 
-	cred, owner, claims, s3Err := validateSignature(getRequestAuthType(r), r)
+	cred, owner, s3Err := validateSignature(getRequestAuthType(r), r)
 	if s3Err != ErrNone {
 		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(s3Err), r.URL)
 		return
@@ -3542,7 +3557,7 @@ func (api objectAPIHandlers) PutObjectRetentionHandler(w http.ResponseWriter, r 
 		getObjectInfo = api.CacheAPI().GetObjectInfo
 	}
 
-	objInfo, s3Err := enforceRetentionBypassForPut(ctx, r, bucket, object, getObjectInfo, objRetention, cred, owner, claims)
+	objInfo, s3Err := enforceRetentionBypassForPut(ctx, r, bucket, object, getObjectInfo, objRetention, cred, owner)
 	if s3Err != ErrNone {
 		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(s3Err), r.URL)
 		return
@@ -3906,13 +3921,14 @@ func (api objectAPIHandlers) PostRestoreObjectHandler(w http.ResponseWriter, r *
 		writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
 		return
 	}
+
 	objInfo, err := getObjectInfo(ctx, bucket, object, opts)
 	if err != nil {
 		writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
 		return
 	}
 
-	if objInfo.TransitionStatus != lifecycle.TransitionComplete {
+	if objInfo.TransitionedObject.Status != lifecycle.TransitionComplete {
 		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrInvalidObjectState), r.URL)
 		return
 	}
