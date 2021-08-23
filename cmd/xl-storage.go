@@ -34,6 +34,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/dustin/go-humanize"
@@ -139,6 +140,9 @@ type xlStorage struct {
 
 	ctx context.Context
 	sync.RWMutex
+
+	// mutex to prevent concurrent read operations overloading walks.
+	walkMu sync.Mutex
 }
 
 // checkPathLength - returns error if given path name length more than 255
@@ -404,6 +408,13 @@ func (s *xlStorage) readMetadata(itemPath string) ([]byte, error) {
 	stat, err := f.Stat()
 	if err != nil {
 		return nil, err
+	}
+	if stat.IsDir() {
+		return nil, &os.PathError{
+			Op:   "open",
+			Path: itemPath,
+			Err:  syscall.EISDIR,
+		}
 	}
 	b, err := readXLMetaNoData(f, stat.Size())
 	if err == nil {

@@ -582,6 +582,15 @@ func (z *erasureServerPools) NSScanner(ctx context.Context, bf *bloomFilter, upd
 func (z *erasureServerPools) MakeBucketWithLocation(ctx context.Context, bucket string, opts BucketOptions) error {
 	g := errgroup.WithNErrs(len(z.serverPools))
 
+	// Lock the bucket name before creating.
+	lk := z.NewNSLock(minioMetaTmpBucket, bucket+".lck")
+	lkctx, err := lk.GetLock(ctx, globalOperationTimeout)
+	if err != nil {
+		return err
+	}
+	ctx = lkctx.Context()
+	defer lk.Unlock(lkctx.Cancel)
+
 	// Create buckets in parallel across all sets.
 	for index := range z.serverPools {
 		index := index
@@ -1060,6 +1069,22 @@ func maxKeysPlusOne(maxKeys int, addOne bool) int {
 
 func (z *erasureServerPools) ListObjects(ctx context.Context, bucket, prefix, marker, delimiter string, maxKeys int) (ListObjectsInfo, error) {
 	var loi ListObjectsInfo
+
+	if len(prefix) > 0 && maxKeys == 1 && delimiter == "" && marker == "" {
+		// Optimization for certain applications like
+		// - Cohesity
+		// - Actifio, Splunk etc.
+		// which send ListObjects requests where the actual object
+		// itself is the prefix and max-keys=1 in such scenarios
+		// we can simply verify locally if such an object exists
+		// to avoid the need for ListObjects().
+		objInfo, err := z.GetObjectInfo(ctx, bucket, prefix, ObjectOptions{NoLock: true})
+		if err == nil {
+			loi.Objects = append(loi.Objects, objInfo)
+			return loi, nil
+		}
+	}
+
 	opts := listPathOptions{
 		Bucket:      bucket,
 		Prefix:      prefix,
@@ -1405,20 +1430,8 @@ func (z *erasureServerPools) DeleteBucket(ctx context.Context, bucket string, fo
 	return nil
 }
 
-// deleteAll will delete a bucket+prefix unconditionally across all disks.
-// Note that set distribution is ignored so it should only be used in cases where
-// data is not distributed across sets.
-// Errors are logged but individual disk failures are not returned.
-func (z *erasureServerPools) deleteAll(ctx context.Context, bucket, prefix string) {
-	for _, servers := range z.serverPools {
-		for _, set := range servers.sets {
-			set.deleteAll(ctx, bucket, prefix)
-		}
-	}
-}
-
 // renameAll will rename bucket+prefix unconditionally across all disks to
-// minioMetaTmpBucket + unique uuid,
+// minioMetaTmpDeletedBucket + unique uuid,
 // Note that set distribution is ignored so it should only be used in cases where
 // data is not distributed across sets. Errors are logged but individual
 // disk failures are not returned.
