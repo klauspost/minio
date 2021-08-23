@@ -988,11 +988,15 @@ func (s *xlStorage) WriteMetadata(ctx context.Context, volume, path string, fi F
 			logger.LogIf(ctx, err)
 			return err
 		}
+		fp := pathJoin(path, xlStorageFormatFile)
+		if vd, err := s.getVolDir(volume); err == nil {
+			globalMemMetaCache.set(fp, vd, buf)
+		}
 		// First writes for special situations do not write to stable storage.
 		// this is currently used by
 		// - emphemeral objects such as objects created during listObjects() calls
 		// - newMultipartUpload() call..
-		return s.writeAll(ctx, volume, pathJoin(path, xlStorageFormatFile), buf, false)
+		return s.writeAll(ctx, volume, fp, buf, false)
 	}
 
 	buf, err := s.ReadAll(ctx, volume, pathJoin(path, xlStorageFormatFile))
