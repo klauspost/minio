@@ -397,9 +397,13 @@ func (s *xlStorage) Healing() *healingTracker {
 }
 
 func (s *xlStorage) readMetadata(itemPath string) ([]byte, error) {
+	if err := checkPathLength(itemPath); err != nil {
+		return nil, err
+	}
 	if v, ok := globalMemMetaCache.getPath(itemPath); ok {
 		return v, nil
 	}
+
 	f, err := OpenFile(itemPath, readMode, 0)
 	if err != nil {
 		return nil, err
@@ -460,9 +464,6 @@ func (s *xlStorage) NSScanner(ctx context.Context, cache dataUsageCache, updates
 		return cache, errServerNotInitialized
 	}
 
-	globalHealConfigMu.Lock()
-	healOpts := globalHealConfig
-	globalHealConfigMu.Unlock()
 	cache.Info.updates = updates
 
 	dataUsageInfo, err := scanDataFolder(ctx, s.diskPath, cache, func(item scannerItem) (sizeSummary, error) {
@@ -480,6 +481,7 @@ func (s *xlStorage) NSScanner(ctx context.Context, cache dataUsageCache, updates
 			}
 			return sizeSummary{}, errSkipFile
 		}
+		defer metaDataPoolPut(buf)
 
 		// Remove filename which is the meta file.
 		item.transformMetaDir()
@@ -494,10 +496,7 @@ func (s *xlStorage) NSScanner(ctx context.Context, cache dataUsageCache, updates
 		sizeS := sizeSummary{}
 		for _, version := range fivs.Versions {
 			oi := version.ToObjectInfo(item.bucket, item.objectPath())
-			sz := item.applyActions(ctx, objAPI, actionMeta{
-				oi:         oi,
-				bitRotScan: healOpts.Bitrot,
-			}, &sizeS)
+			sz := item.applyActions(ctx, objAPI, oi, &sizeS)
 			if !oi.DeleteMarker && sz == oi.Size {
 				sizeS.versions++
 			}
@@ -912,7 +911,8 @@ func (s *xlStorage) DeleteVersion(ctx context.Context, volume, path string, fi F
 	}
 	fp := pathJoin(path, xlStorageFormatFile)
 	if !lastVersion {
-		buf, err = xlMeta.AppendTo(nil)
+		buf, err = xlMeta.AppendTo(metaDataPoolGet())
+		defer metaDataPoolPut(buf)
 		if err != nil {
 			return err
 		}
@@ -983,7 +983,8 @@ func (s *xlStorage) WriteMetadata(ctx context.Context, volume, path string, fi F
 			logger.LogIf(ctx, err)
 			return err
 		}
-		buf, err := xlMeta.AppendTo(nil)
+		buf, err := xlMeta.AppendTo(metaDataPoolGet())
+		defer metaDataPoolPut(buf)
 		if err != nil {
 			logger.LogIf(ctx, err)
 			return err
@@ -1003,6 +1004,7 @@ func (s *xlStorage) WriteMetadata(ctx context.Context, volume, path string, fi F
 	if err != nil && err != errFileNotFound {
 		return err
 	}
+	defer metaDataPoolPut(buf)
 
 	var xlMeta xlMetaV2
 	if !isXL2V1Format(buf) {
@@ -1012,7 +1014,8 @@ func (s *xlStorage) WriteMetadata(ctx context.Context, volume, path string, fi F
 			return err
 		}
 
-		buf, err = xlMeta.AppendTo(nil)
+		buf, err = xlMeta.AppendTo(metaDataPoolGet())
+		defer metaDataPoolPut(buf)
 		if err != nil {
 			logger.LogIf(ctx, err)
 			return err
@@ -1028,7 +1031,8 @@ func (s *xlStorage) WriteMetadata(ctx context.Context, volume, path string, fi F
 			return err
 		}
 
-		buf, err = xlMeta.AppendTo(nil)
+		buf, err = xlMeta.AppendTo(metaDataPoolGet())
+		defer metaDataPoolPut(buf)
 		if err != nil {
 			logger.LogIf(ctx, err)
 			return err
@@ -1152,11 +1156,9 @@ func (s *xlStorage) ReadVersion(ctx context.Context, volume, path, versionID str
 		return fi, err
 	}
 
-	if len(fi.Data) == 0 && cap(buf) >= metaDataReadDefault && cap(buf) < metaDataReadDefault*4 {
+	if len(fi.Data) == 0 {
 		// We did not read inline data, so we have no references.
-		defer func(b []byte) {
-			metaDataPool.Put(buf)
-		}(buf)
+		defer metaDataPoolPut(buf)
 	}
 
 	if readData {
@@ -1947,7 +1949,10 @@ func (s *xlStorage) RenameData(ctx context.Context, srcVolume, srcPath string, f
 
 	var srcDataPath string
 	var dstDataPath string
-	dataDir := retainSlash(fi.DataDir)
+	var dataDir string
+	if !fi.IsRemote() {
+		dataDir = retainSlash(fi.DataDir)
+	}
 	if dataDir != "" {
 		srcDataPath = retainSlash(pathJoin(srcVolumeDir, srcPath, dataDir))
 		// make sure to always use path.Join here, do not use pathJoin as
@@ -2106,7 +2111,8 @@ func (s *xlStorage) RenameData(ctx context.Context, srcVolume, srcPath string, f
 		return err
 	}
 
-	dstBuf, err = xlMeta.AppendTo(nil)
+	dstBuf, err = xlMeta.AppendTo(metaDataPoolGet())
+	defer metaDataPoolPut(dstBuf)
 	if err != nil {
 		logger.LogIf(ctx, err)
 		if legacyPreserved {

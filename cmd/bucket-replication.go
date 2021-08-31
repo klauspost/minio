@@ -28,7 +28,7 @@ import (
 	"time"
 
 	"github.com/minio/madmin-go"
-	minio "github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7"
 	miniogo "github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/encrypt"
 	"github.com/minio/minio-go/v7/pkg/tags"
@@ -314,6 +314,39 @@ func replicateDelete(ctx context.Context, dobj DeletedObjectReplicationInfo, obj
 			EventName: event.ObjectReplicationNotTracked,
 		})
 		return
+	}
+
+	// Lock the object name before starting replication operation.
+	// Use separate lock that doesn't collide with regular objects.
+	lk := objectAPI.NewNSLock(bucket, "/[replicate]/"+dobj.ObjectName)
+	lkctx, err := lk.GetLock(ctx, globalOperationTimeout)
+	if err != nil {
+		logger.LogIf(ctx, fmt.Errorf("failed to get lock for object: %s bucket:%s arn:%s", dobj.ObjectName, bucket, rcfg.RoleArn))
+		sendEvent(eventArgs{
+			BucketName: bucket,
+			Object: ObjectInfo{
+				Bucket:       bucket,
+				Name:         dobj.ObjectName,
+				VersionID:    versionID,
+				DeleteMarker: dobj.DeleteMarker,
+			},
+			Host:      "Internal: [Replication]",
+			EventName: event.ObjectReplicationNotTracked,
+		})
+		return
+	}
+	ctx = lkctx.Context()
+	defer lk.Unlock(lkctx.Cancel)
+	// early return if already replicated delete marker for existing object replication
+	if dobj.DeleteMarkerVersionID != "" && dobj.OpType == replication.ExistingObjectReplicationType {
+		_, err := tgt.StatObject(ctx, rcfg.GetDestination().Bucket, dobj.ObjectName, miniogo.StatObjectOptions{
+			VersionID: versionID,
+			Internal: miniogo.AdvancedGetOptions{
+				ReplicationProxyRequest: "false",
+			}})
+		if isErrMethodNotAllowed(ErrorRespToObjectError(err, dobj.Bucket, dobj.ObjectName)) {
+			return
+		}
 	}
 
 	rmErr := tgt.RemoveObject(ctx, rcfg.GetDestination().Bucket, dobj.ObjectName, miniogo.RemoveObjectOptions{
@@ -669,6 +702,24 @@ func replicateObject(ctx context.Context, ri ReplicateObjectInfo, objectAPI Obje
 		})
 		return
 	}
+
+	// Lock the object name before starting replication.
+	// Use separate lock that doesn't collide with regular objects.
+	lk := objectAPI.NewNSLock(bucket, "/[replicate]/"+object)
+	lkctx, err := lk.GetLock(ctx, globalOperationTimeout)
+	if err != nil {
+		sendEvent(eventArgs{
+			EventName:  event.ObjectReplicationNotTracked,
+			BucketName: bucket,
+			Object:     objInfo,
+			Host:       "Internal: [Replication]",
+		})
+		logger.LogIf(ctx, fmt.Errorf("failed to get lock for object: %s bucket:%s arn:%s", object, bucket, cfg.RoleArn))
+		return
+	}
+	ctx = lkctx.Context()
+	defer lk.Unlock(lkctx.Cancel)
+
 	var closeOnDefer bool
 	gr, err := objectAPI.GetObjectNInfo(ctx, bucket, object, nil, http.Header{}, readLock, ObjectOptions{
 		VersionID: objInfo.VersionID,
@@ -726,7 +777,7 @@ func replicateObject(ctx context.Context, ri ReplicateObjectInfo, objectAPI Obje
 		if rtype == replicateNone {
 			// object with same VersionID already exists, replication kicked off by
 			// PutObject might have completed
-			if objInfo.ReplicationStatus == replication.Pending || objInfo.ReplicationStatus == replication.Failed {
+			if objInfo.ReplicationStatus == replication.Pending || objInfo.ReplicationStatus == replication.Failed || ri.OpType == replication.ExistingObjectReplicationType {
 				// if metadata is not updated for some reason after replication, such as
 				// 503 encountered while updating metadata - make sure to set ReplicationStatus
 				// as Completed.
@@ -741,6 +792,9 @@ func replicateObject(ctx context.Context, ri ReplicateObjectInfo, objectAPI Obje
 				}
 				for k, v := range objInfo.UserDefined {
 					popts.UserDefined[k] = v
+				}
+				if ri.OpType == replication.ExistingObjectReplicationType {
+					popts.UserDefined[xhttp.MinIOReplicationResetStatus] = fmt.Sprintf("%s;%s", UTCNow().Format(http.TimeFormat), ri.ResetID)
 				}
 				popts.UserDefined[xhttp.AmzBucketReplicationStatus] = replication.Completed.String()
 				if objInfo.UserTags != "" {
@@ -896,16 +950,16 @@ func replicateObjectWithMultipart(ctx context.Context, c *miniogo.Core, bucket, 
 	)
 
 	for _, partInfo := range objInfo.Parts {
-		hr, err = hash.NewReader(r, partInfo.Size, "", "", partInfo.Size)
+		hr, err = hash.NewReader(r, partInfo.ActualSize, "", "", partInfo.ActualSize)
 		if err != nil {
 			return err
 		}
-		pInfo, err = c.PutObjectPart(ctx, bucket, object, uploadID, partInfo.Number, hr, partInfo.Size, "", "", opts.ServerSideEncryption)
+		pInfo, err = c.PutObjectPart(ctx, bucket, object, uploadID, partInfo.Number, hr, partInfo.ActualSize, "", "", opts.ServerSideEncryption)
 		if err != nil {
 			return err
 		}
-		if pInfo.Size != partInfo.Size {
-			return fmt.Errorf("Part size mismatch: got %d, want %d", pInfo.Size, partInfo.Size)
+		if pInfo.Size != partInfo.ActualSize {
+			return fmt.Errorf("Part size mismatch: got %d, want %d", pInfo.Size, partInfo.ActualSize)
 		}
 		uploadedParts = append(uploadedParts, miniogo.CompletePart{
 			PartNumber: pInfo.PartNumber,

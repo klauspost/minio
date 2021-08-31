@@ -20,6 +20,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -396,9 +397,6 @@ type healSequence struct {
 	// bucket, and object on which heal seq. was initiated
 	bucket, object string
 
-	// A channel of entities (format, buckets, objects) to heal
-	sourceCh chan healSource
-
 	// A channel of entities with heal result
 	respCh chan healResult
 
@@ -648,11 +646,7 @@ func (h *healSequence) healSequenceStart(objAPI ObjectLayer) {
 	h.currentStatus.StartTime = UTCNow()
 	h.mutex.Unlock()
 
-	if h.sourceCh == nil {
-		go h.traverseAndHeal(objAPI)
-	} else {
-		go h.healFromSourceCh()
-	}
+	go h.traverseAndHeal(objAPI)
 
 	select {
 	case err, ok := <-h.traverseAndHealDoneCh:
@@ -696,38 +690,36 @@ func (h *healSequence) logHeal(healType madmin.HealItemType) {
 }
 
 func (h *healSequence) queueHealTask(source healSource, healType madmin.HealItemType) error {
-	globalHealConfigMu.Lock()
-	opts := globalHealConfig
-	globalHealConfigMu.Unlock()
-
 	// Send heal request
 	task := healTask{
-		bucket:     source.bucket,
-		object:     source.object,
-		versionID:  source.versionID,
-		opts:       h.settings,
-		responseCh: h.respCh,
+		bucket:    source.bucket,
+		object:    source.object,
+		versionID: source.versionID,
+		opts:      h.settings,
+		respCh:    h.respCh,
 	}
 	if source.opts != nil {
 		task.opts = *source.opts
 	}
-	if opts.Bitrot {
-		task.opts.ScanMode = madmin.HealDeepScan
-	}
-
-	// Wait and proceed if there are active requests
-	waitForLowHTTPReq(opts.IOCount, opts.Sleep)
+	task.opts.ScanMode = globalHealConfig.ScanMode()
 
 	h.mutex.Lock()
 	h.scannedItemsMap[healType]++
 	h.lastHealActivity = UTCNow()
 	h.mutex.Unlock()
 
-	globalBackgroundHealRoutine.queueHealTask(task)
+	select {
+	case globalBackgroundHealRoutine.tasks <- task:
+	case <-h.ctx.Done():
+		return nil
+	}
 
 	select {
 	case res := <-h.respCh:
 		if !h.reportProgress {
+			if errors.Is(res.err, errSkipFile) { // this is only sent usually by nopHeal
+				return nil
+			}
 			// Object might have been deleted, by the time heal
 			// was attempted, we should ignore this object and
 			// return the error and not calculate this object
@@ -774,48 +766,6 @@ func (h *healSequence) queueHealTask(source healSource, healType madmin.HealItem
 	case <-h.ctx.Done():
 		return nil
 	}
-}
-
-func (h *healSequence) healItemsFromSourceCh() error {
-	for {
-		select {
-		case source, ok := <-h.sourceCh:
-			if !ok {
-				return nil
-			}
-
-			var itemType madmin.HealItemType
-			switch source.bucket {
-			case nopHeal:
-				continue
-			case SlashSeparator:
-				itemType = madmin.HealItemMetadata
-			default:
-				if source.object == "" {
-					itemType = madmin.HealItemBucket
-				} else {
-					itemType = madmin.HealItemObject
-				}
-			}
-
-			if err := h.queueHealTask(source, itemType); err != nil {
-				switch err.(type) {
-				case ObjectExistsAsDirectory:
-				case ObjectNotFound:
-				case VersionNotFound:
-				default:
-					logger.LogIf(h.ctx, fmt.Errorf("Heal attempt failed for %s: %w",
-						pathJoin(source.bucket, source.object), err))
-				}
-			}
-		case <-h.ctx.Done():
-			return nil
-		}
-	}
-}
-
-func (h *healSequence) healFromSourceCh() {
-	h.healItemsFromSourceCh()
 }
 
 func (h *healSequence) healDiskMeta(objAPI ObjectLayer) error {
@@ -963,5 +913,9 @@ func (h *healSequence) healObject(bucket, object, versionID string) error {
 		object:    object,
 		versionID: versionID,
 	}, madmin.HealItemObject)
+
+	// Wait and proceed if there are active requests
+	waitForLowHTTPReq()
+
 	return err
 }

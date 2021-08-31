@@ -412,8 +412,6 @@ func lookupConfigs(s config.Config, setDriveCounts []int) {
 		logger.LogIf(ctx, fmt.Errorf("Invalid api configuration: %w", err))
 	}
 
-	globalAPIConfig.init(apiConfig, setDriveCounts)
-
 	// Initialize remote instance transport once.
 	getRemoteInstanceTransportOnce.Do(func() {
 		getRemoteInstanceTransport = newGatewayHTTPTransport(apiConfig.RemoteTransportDeadline)
@@ -579,9 +577,7 @@ func applyDynamicConfig(ctx context.Context, objAPI ObjectLayer, s config.Config
 	globalCompressConfig = cmpCfg
 	globalCompressConfigMu.Unlock()
 
-	globalHealConfigMu.Lock()
-	globalHealConfig = healCfg
-	globalHealConfigMu.Unlock()
+	globalHealConfig.Update(healCfg)
 
 	// update dynamic scanner values.
 	scannerCycle.Update(scannerCfg.Cycle)

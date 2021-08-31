@@ -441,7 +441,7 @@ func (er erasureObjects) getObjectInfo(ctx context.Context, bucket, object strin
 
 	}
 	objInfo = fi.ToObjectInfo(bucket, object)
-	if !fi.VersionPurgeStatus.Empty() {
+	if !fi.VersionPurgeStatus.Empty() && opts.VersionID != "" {
 		// Make sure to return object info to provide extra information.
 		return objInfo, toObjectErr(errMethodNotAllowed, bucket, object)
 	}
@@ -1191,9 +1191,40 @@ func (er erasureObjects) DeleteObject(ctx context.Context, bucket, object string
 		return ObjectInfo{}, toObjectErr(er.deletePrefix(ctx, bucket, object), bucket, object)
 	}
 
+	var lc *lifecycle.Lifecycle
+	if opts.Expiration.Expire {
+		// Check if the current bucket has a configured lifecycle policy
+		lc, _ = globalLifecycleSys.Get(bucket)
+	}
+
+	// expiration attempted on a bucket with no lifecycle
+	// rules shall be rejected.
+	if lc == nil && opts.Expiration.Expire {
+		if opts.VersionID != "" {
+			return objInfo, VersionNotFound{
+				Bucket:    bucket,
+				Object:    object,
+				VersionID: opts.VersionID,
+			}
+		}
+		return objInfo, ObjectNotFound{
+			Bucket: bucket,
+			Object: object,
+		}
+	}
+
+	// Acquire a write lock before deleting the object.
+	lk := er.NewNSLock(bucket, object)
+	lkctx, err := lk.GetLock(ctx, globalDeleteOperationTimeout)
+	if err != nil {
+		return ObjectInfo{}, err
+	}
+	ctx = lkctx.Context()
+	defer lk.Unlock(lkctx.Cancel)
+
 	versionFound := true
 	objInfo = ObjectInfo{VersionID: opts.VersionID} // version id needed in Delete API response.
-	goi, gerr := er.GetObjectInfo(ctx, bucket, object, opts)
+	goi, gerr := er.getObjectInfo(ctx, bucket, object, opts)
 	if gerr != nil && goi.Name == "" {
 		switch gerr.(type) {
 		case InsufficientReadQuorum:
@@ -1207,16 +1238,31 @@ func (er erasureObjects) DeleteObject(ctx context.Context, bucket, object string
 		}
 	}
 
-	defer NSUpdated(bucket, object)
-
-	// Acquire a write lock before deleting the object.
-	lk := er.NewNSLock(bucket, object)
-	lkctx, err := lk.GetLock(ctx, globalDeleteOperationTimeout)
-	if err != nil {
-		return ObjectInfo{}, err
+	if opts.Expiration.Expire {
+		action := evalActionFromLifecycle(ctx, *lc, goi, false)
+		var isErr bool
+		switch action {
+		case lifecycle.NoneAction:
+			isErr = true
+		case lifecycle.TransitionAction, lifecycle.TransitionVersionAction:
+			isErr = true
+		}
+		if isErr {
+			if goi.VersionID != "" {
+				return goi, VersionNotFound{
+					Bucket:    bucket,
+					Object:    object,
+					VersionID: goi.VersionID,
+				}
+			}
+			return goi, ObjectNotFound{
+				Bucket: bucket,
+				Object: object,
+			}
+		}
 	}
-	ctx = lkctx.Context()
-	defer lk.Unlock(lkctx.Cancel)
+
+	defer NSUpdated(bucket, object)
 
 	storageDisks := er.getDisks()
 	writeQuorum := len(storageDisks)/2 + 1
@@ -1476,7 +1522,6 @@ func (er erasureObjects) TransitionObject(ctx context.Context, bucket, object st
 	if err != nil {
 		return err
 	}
-	defer NSUpdated(bucket, object)
 
 	// Acquire write lock before starting to transition the object.
 	lk := er.NewNSLock(bucket, object)
@@ -1506,6 +1551,8 @@ func (er erasureObjects) TransitionObject(ctx context.Context, bucket, object st
 	if fi.TransitionStatus == lifecycle.TransitionComplete {
 		return nil
 	}
+	defer NSUpdated(bucket, object)
+
 	if fi.XLV1 {
 		if _, err = er.HealObject(ctx, bucket, object, "", madmin.HealOpts{NoLock: true}); err != nil {
 			return err
@@ -1548,6 +1595,7 @@ func (er erasureObjects) TransitionObject(ctx context.Context, bucket, object st
 	if err = er.deleteObjectVersion(ctx, bucket, object, writeQuorum, fi, false); err != nil {
 		eventName = event.ObjectTransitionFailed
 	}
+
 	for _, disk := range storageDisks {
 		if disk != nil && disk.IsOnline() {
 			continue

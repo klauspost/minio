@@ -298,10 +298,9 @@ func (client *storageRESTClient) DiskInfo(ctx context.Context) (info DiskInfo, e
 		client.diskInfoCache.Update = client.diskInfo
 	})
 	val, err := client.diskInfoCache.Get()
-	if err == nil {
-		info = val.(DiskInfo)
+	if val != nil {
+		return val.(DiskInfo), err
 	}
-
 	return info, err
 }
 
@@ -378,6 +377,10 @@ func (client *storageRESTClient) CreateFile(ctx context.Context, volume, path st
 	values.Set(storageRESTLength, strconv.Itoa(int(size)))
 	respBody, err := client.call(ctx, storageRESTMethodCreateFile, values, ioutil.NopCloser(reader), size)
 	defer xhttp.DrainBody(respBody)
+	if err != nil {
+		return err
+	}
+	_, err = waitForHTTPResponse(respBody)
 	return err
 }
 

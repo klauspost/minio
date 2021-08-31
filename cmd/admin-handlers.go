@@ -369,10 +369,10 @@ func topLockEntries(peerLocks []*PeerLocks, stale bool) madmin.LockEntries {
 		}
 		for k, v := range peerLock.Locks {
 			for _, lockReqInfo := range v {
-				if val, ok := entryMap[lockReqInfo.UID]; ok {
+				if val, ok := entryMap[lockReqInfo.Name]; ok {
 					val.ServerList = append(val.ServerList, peerLock.Addr)
 				} else {
-					entryMap[lockReqInfo.UID] = lriToLockEntry(lockReqInfo, k, peerLock.Addr)
+					entryMap[lockReqInfo.Name] = lriToLockEntry(lockReqInfo, k, peerLock.Addr)
 				}
 			}
 		}
@@ -1567,6 +1567,22 @@ func (a adminAPIHandlers) HealthInfoHandler(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
+	getAndWriteSysConfig := func() {
+		if query.Get(string(madmin.HealthDataTypeSysConfig)) == "true" {
+			localSysConfig := madmin.GetSysConfig(deadlinedCtx, globalLocalNodeName)
+			anonymizeAddr(&localSysConfig)
+			healthInfo.Sys.SysConfig = append(healthInfo.Sys.SysConfig, localSysConfig)
+			partialWrite(healthInfo)
+
+			peerSysConfig := globalNotificationSys.GetSysConfig(deadlinedCtx)
+			for _, sc := range peerSysConfig {
+				anonymizeAddr(&sc)
+				healthInfo.Sys.SysConfig = append(healthInfo.Sys.SysConfig, sc)
+			}
+			partialWrite(healthInfo)
+		}
+	}
+
 	getAndWriteSysServices := func() {
 		if query.Get(string(madmin.HealthDataTypeSysServices)) == "true" {
 			localSysServices := madmin.GetSysServices(deadlinedCtx, globalLocalNodeName)
@@ -1575,9 +1591,9 @@ func (a adminAPIHandlers) HealthInfoHandler(w http.ResponseWriter, r *http.Reque
 			partialWrite(healthInfo)
 
 			peerSysServices := globalNotificationSys.GetSysServices(deadlinedCtx)
-			for _, sli := range peerSysServices {
-				anonymizeAddr(&sli)
-				healthInfo.Sys.SysServices = append(healthInfo.Sys.SysServices, sli)
+			for _, ss := range peerSysServices {
+				anonymizeAddr(&ss)
+				healthInfo.Sys.SysServices = append(healthInfo.Sys.SysServices, ss)
 			}
 			partialWrite(healthInfo)
 		}
@@ -1758,6 +1774,7 @@ func (a adminAPIHandlers) HealthInfoHandler(w http.ResponseWriter, r *http.Reque
 		getAndWriteNetPerfInfo()
 		getAndWriteSysErrors()
 		getAndWriteSysServices()
+		getAndWriteSysConfig()
 
 		if query.Get("minioinfo") == "true" {
 			infoMessage := getServerInfo(ctx, r)

@@ -19,13 +19,13 @@ package cmd
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sort"
 	"time"
 
 	"github.com/minio/madmin-go"
 	"github.com/minio/minio/internal/color"
+	"github.com/minio/minio/internal/config/storageclass"
 	"github.com/minio/minio/internal/logger"
 	"github.com/minio/pkg/console"
 	"github.com/minio/pkg/wildcard"
@@ -43,12 +43,11 @@ func newBgHealSequence() *healSequence {
 
 	hs := madmin.HealOpts{
 		// Remove objects that do not have read-quorum
-		Remove:   true,
-		ScanMode: madmin.HealNormalScan,
+		Remove:   healDeleteDangling,
+		ScanMode: globalHealConfig.ScanMode(),
 	}
 
 	return &healSequence{
-		sourceCh:    make(chan healSource),
 		respCh:      make(chan healResult),
 		startTime:   UTCNow(),
 		clientToken: bgHealingUUID,
@@ -133,6 +132,11 @@ func getBackgroundHealStatus(ctx context.Context, o ObjectLayer) (madmin.BgHealS
 		return status.Sets[i].ID < status.Sets[j].ID
 	})
 
+	backendInfo := o.BackendInfo()
+	status.SCParity = make(map[string]int)
+	status.SCParity[storageclass.STANDARD] = backendInfo.StandardSCParity
+	status.SCParity[storageclass.RRS] = backendInfo.RRSCParity
+
 	return status, true
 
 }
@@ -165,6 +169,8 @@ func (er *erasureObjects) healErasureSet(ctx context.Context, buckets []BucketIn
 		Name: pathJoin(minioMetaBucket, minioConfigPrefix),
 	})
 
+	scanMode := globalHealConfig.ScanMode()
+
 	// Heal all buckets with all objects
 	for _, bucket := range buckets {
 		if tracker.isHealed(bucket.Name) {
@@ -183,7 +189,9 @@ func (er *erasureObjects) healErasureSet(ctx context.Context, buckets []BucketIn
 		tracker.Object = ""
 		tracker.Bucket = bucket.Name
 		// Heal current bucket
-		if _, err := er.HealBucket(ctx, bucket.Name, madmin.HealOpts{}); err != nil {
+		if _, err := er.HealBucket(ctx, bucket.Name, madmin.HealOpts{
+			ScanMode: scanMode,
+		}); err != nil {
 			if !isErrObjectNotFound(err) && !isErrVersionNotFound(err) {
 				logger.LogIf(ctx, err)
 			}
@@ -195,7 +203,12 @@ func (er *erasureObjects) healErasureSet(ctx context.Context, buckets []BucketIn
 
 		disks, _ := er.getOnlineDisksWithHealing()
 		if len(disks) == 0 {
-			return errors.New("healErasureSet: No non-healing disks found")
+			// all disks are healing in this set, this is allowed
+			// so we simply proceed to next bucket, marking the bucket
+			// as done as there are no objects to heal.
+			tracker.bucketDone(bucket.Name)
+			logger.LogIf(ctx, tracker.update(ctx))
+			continue
 		}
 
 		// Limit listing to 3 drives.
@@ -221,15 +234,26 @@ func (er *erasureObjects) healErasureSet(ctx context.Context, buckets []BucketIn
 					return
 				}
 			}
+
 			fivs, err := entry.fileInfoVersions(bucket.Name)
 			if err != nil {
-				logger.LogIf(ctx, err)
+				err := bgSeq.queueHealTask(healSource{
+					bucket:    bucket.Name,
+					object:    entry.name,
+					versionID: "",
+				}, madmin.HealItemObject)
+				if !isErrObjectNotFound(err) && !isErrVersionNotFound(err) {
+					logger.LogIf(ctx, err)
+				}
 				return
 			}
-			waitForLowHTTPReq(globalHealConfig.IOCount, globalHealConfig.Sleep)
+
 			for _, version := range fivs.Versions {
-				if _, err := er.HealObject(ctx, bucket.Name, version.Name, version.VersionID, madmin.HealOpts{
-					ScanMode: madmin.HealNormalScan, Remove: healDeleteDangling}); err != nil {
+				if _, err := er.HealObject(ctx, bucket.Name, version.Name,
+					version.VersionID, madmin.HealOpts{
+						ScanMode: scanMode,
+						Remove:   healDeleteDangling,
+					}); err != nil {
 					if !isErrObjectNotFound(err) && !isErrVersionNotFound(err) {
 						// If not deleted, assume they failed.
 						tracker.ItemsFailed++
@@ -246,6 +270,9 @@ func (er *erasureObjects) healErasureSet(ctx context.Context, buckets []BucketIn
 			if time.Since(tracker.LastUpdate) > time.Minute {
 				logger.LogIf(ctx, tracker.update(ctx))
 			}
+
+			// Wait and proceed if there are active requests
+			waitForLowHTTPReq()
 		}
 
 		// How to resolve partial results.
@@ -265,9 +292,12 @@ func (er *erasureObjects) healErasureSet(ctx context.Context, buckets []BucketIn
 			agreed:         healEntry,
 			partial: func(entries metaCacheEntries, nAgreed int, errs []error) {
 				entry, ok := entries.resolve(&resolver)
-				if ok {
-					healEntry(*entry)
+				if !ok {
+					// check if we can get one entry atleast
+					// proceed to heal nonetheless.
+					entry, _ = entries.firstFound()
 				}
+				healEntry(*entry)
 			},
 			finished: nil,
 		})
@@ -298,14 +328,14 @@ func healObject(bucket, object, versionID string, scan madmin.HealScanMode) {
 	// Get background heal sequence to send elements to heal
 	bgSeq, ok := globalBackgroundHealState.getHealSequenceByToken(bgHealingUUID)
 	if ok {
-		bgSeq.sourceCh <- healSource{
+		bgSeq.queueHealTask(healSource{
 			bucket:    bucket,
 			object:    object,
 			versionID: versionID,
 			opts: &madmin.HealOpts{
-				Remove:   true, // if found dangling purge it.
+				Remove:   healDeleteDangling, // if found dangling purge it.
 				ScanMode: scan,
 			},
-		}
+		}, madmin.HealItemObject)
 	}
 }
