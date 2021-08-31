@@ -80,8 +80,9 @@ func (m *memMetaCache) getPath(file string) (data []byte, ok bool) {
 	}
 	if b, ok := m.data.Get(hashFileName(file)); ok {
 		atomic.AddInt32(&hits, 1)
+		ret := append(metaDataPoolGet(), b.([]byte)...)
 		//fmt.Println("getPath", file)
-		return b.([]byte), true
+		return ret, true
 	}
 	atomic.AddInt32(&misses, 1)
 	return nil, false
@@ -95,6 +96,8 @@ func (m *memMetaCache) setPath(filepath string, data []byte) {
 	if len(data) > memMetaCacheMaxSize {
 		return
 	}
+	// copy:
+	data = append(metaDataPoolGet(), data...)
 	//fmt.Println("setPath", filepath)
 	m.data.Add(hashFileName(filepath), data)
 }
@@ -107,6 +110,8 @@ func (m *memMetaCache) set(volumeDir, file string, data []byte) {
 	if len(data) > memMetaCacheMaxSize {
 		return
 	}
+	// copy:
+	data = append(metaDataPoolGet(), data...)
 	//fmt.Println("set", pathJoin(volumeDir, file))
 	m.data.Add(hashFileName(pathJoin(volumeDir, file)), data)
 }
