@@ -88,6 +88,50 @@ func getAllFileInfoVersions(xlMetaBuf []byte, volume, path string) (FileInfoVers
 	}, nil
 }
 
+func getAllFileInfoVersionsSummary(xlMetaBuf []byte, o ListVersionOpts) (VersionSummary, error) {
+	if isXL2V1Format(xlMetaBuf) {
+		var versions VersionSummary
+		var err error
+		if buf, _ := isIndexedMetaV2(xlMetaBuf); buf != nil {
+			versions, err = buf.ListVersionsSummary(o)
+		} else {
+			var xlMeta xlMetaV2
+			if err := xlMeta.Load(xlMetaBuf); err != nil {
+				return VersionSummary{}, err
+			}
+			versions = VersionSummary{Versions: make([]xlMetaV2VersionHeader, len(xlMeta.versions))}
+			n := 0
+			for _, ver := range xlMeta.versions {
+				versions.Versions[n] = ver.header
+				if o.SkipFreeVersions && ver.header.FreeVersion() {
+					continue
+				}
+				n++
+			}
+			versions.Versions = versions.Versions[:n]
+		}
+		if err != nil || len(versions.Versions) == 0 {
+			return VersionSummary{}, err
+		}
+
+		return versions, nil
+	}
+
+	xlMeta := &xlMetaV1Object{}
+	var json = jsoniter.ConfigCompatibleWithStandardLibrary
+	if err := json.Unmarshal(xlMetaBuf, xlMeta); err != nil {
+		return VersionSummary{}, errFileCorrupt
+	}
+
+	return VersionSummary{
+		Versions: []xlMetaV2VersionHeader{{
+			ModTime: xlMeta.Stat.ModTime.UnixNano(),
+			Type:    LegacyType,
+			Flags:   0,
+		}},
+	}, nil
+}
+
 func getFileInfo(xlMetaBuf []byte, volume, path, versionID string, data bool) (FileInfo, error) {
 	if isXL2V1Format(xlMetaBuf) {
 		var fi FileInfo
