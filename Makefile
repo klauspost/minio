@@ -19,7 +19,7 @@ help: ## print this help
 
 getdeps: ## fetch necessary dependencies
 	@mkdir -p ${GOPATH}/bin
-	@echo "Installing golangci-lint" && curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(GOPATH)/bin v1.40.1
+	@echo "Installing golangci-lint" && curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(GOPATH)/bin v1.43.0
 	@echo "Installing msgp" && go install -v github.com/tinylib/msgp@v1.1.7-0.20211026165309-e818a1881b0e
 	@echo "Installing stringer" && go install -v golang.org/x/tools/cmd/stringer@latest
 
@@ -42,15 +42,19 @@ test: verifiers build ## builds minio, runs linters, tests
 	@echo "Running unit tests"
 	@GO111MODULE=on CGO_ENABLED=0 go test -tags kqueue ./... 1>/dev/null
 
-test-race: verifiers build
+test-race: verifiers build ## builds minio, runs linters, tests (race)
 	@echo "Running unit tests under -race"
 	@(env bash $(PWD)/buildscripts/race.sh)
 
-test-ldap: build
-	@echo "Running tests for LDAP integration"
-	@CGO_ENABLED=0 go test -tags kqueue -v -run TestIAMWithLDAPServerSuite ./cmd
-	@echo "Running tests for LDAP integration with -race"
-	@CGO_ENABLED=1 go test -race -tags kqueue -v -run TestIAMWithLDAPServerSuite ./cmd
+test-iam: build ## verify IAM (external IDP, etcd backends)
+	@echo "Running tests for IAM (external IDP, etcd backends)"
+	@CGO_ENABLED=0 go test -tags kqueue -v -run TestIAM* ./cmd
+	@echo "Running tests for IAM (external IDP, etcd backends) with -race"
+	@CGO_ENABLED=1 go test -race -tags kqueue -v -run TestIAM* ./cmd
+
+test-replication: install ## verify multi site replication
+	@echo "Running tests for Replication three sites"
+	@(env bash $(PWD)/docs/bucket/replication/setup_3site_replication.sh)
 
 verify: ## verify minio various setups
 	@echo "Verifying build with race"

@@ -193,6 +193,7 @@ func (dr *DefaultRetention) UnmarshalXML(d *xml.Decoder, start xml.StartElement)
 		return fmt.Errorf("either Days or Years must be specified, not both")
 	}
 
+	//nolint:gocritic
 	if retention.Days != nil {
 		if *retention.Days == 0 {
 			return fmt.Errorf("Default retention period must be a positive integer value for 'Days'")
@@ -382,7 +383,7 @@ func IsObjectLockLegalHoldRequested(h http.Header) bool {
 
 // IsObjectLockGovernanceBypassSet returns true if object lock governance bypass header is set.
 func IsObjectLockGovernanceBypassSet(h http.Header) bool {
-	return strings.ToLower(h.Get(AmzObjectLockBypassRetGovernance)) == "true"
+	return strings.EqualFold(h.Get(AmzObjectLockBypassRetGovernance), "true")
 }
 
 // IsObjectLockRequested returns true if legal hold or object lock retention headers are requested.

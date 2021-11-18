@@ -20,6 +20,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -39,13 +40,16 @@ const (
 type TestSuiteIAM struct {
 	TestSuiteCommon
 
+	// Flag to turn on tests for etcd backend IAM
+	withEtcdBackend bool
+
 	endpoint string
 	adm      *madmin.AdminClient
 	client   *minio.Client
 }
 
-func newTestSuiteIAM(c TestSuiteCommon) *TestSuiteIAM {
-	return &TestSuiteIAM{TestSuiteCommon: c}
+func newTestSuiteIAM(c TestSuiteCommon, withEtcdBackend bool) *TestSuiteIAM {
+	return &TestSuiteIAM{TestSuiteCommon: c, withEtcdBackend: withEtcdBackend}
 }
 
 func (s *TestSuiteIAM) iamSetup(c *check) {
@@ -73,16 +77,60 @@ func (s *TestSuiteIAM) iamSetup(c *check) {
 	}
 }
 
+const (
+	EnvTestEtcdBackend = "ETCD_SERVER"
+)
+
+func (s *TestSuiteIAM) setUpEtcd(c *check, etcdServer string) {
+	ctx, cancel := context.WithTimeout(context.Background(), testDefaultTimeout)
+	defer cancel()
+
+	configCmds := []string{
+		"etcd",
+		"endpoints=" + etcdServer,
+		"path_prefix=" + mustGetUUID(),
+	}
+	_, err := s.adm.SetConfigKV(ctx, strings.Join(configCmds, " "))
+	if err != nil {
+		c.Fatalf("unable to setup Etcd for tests: %v", err)
+	}
+
+	s.RestartIAMSuite(c)
+}
+
 func (s *TestSuiteIAM) SetUpSuite(c *check) {
+	// If etcd backend is specified and etcd server is not present, the test
+	// is skipped.
+	etcdServer := os.Getenv(EnvTestEtcdBackend)
+	if s.withEtcdBackend && etcdServer == "" {
+		c.Skip("Skipping etcd backend IAM test as no etcd server is configured.")
+	}
+
 	s.TestSuiteCommon.SetUpSuite(c)
 
 	s.iamSetup(c)
+
+	if s.withEtcdBackend {
+		s.setUpEtcd(c, etcdServer)
+	}
 }
 
 func (s *TestSuiteIAM) RestartIAMSuite(c *check) {
 	s.TestSuiteCommon.RestartTestServer(c)
 
 	s.iamSetup(c)
+}
+
+func (s *TestSuiteIAM) getAdminClient(c *check, accessKey, secretKey, sessionToken string) *madmin.AdminClient {
+	madmClnt, err := madmin.NewWithOptions(s.endpoint, &madmin.Options{
+		Creds:  credentials.NewStaticV4(accessKey, secretKey, sessionToken),
+		Secure: s.secure,
+	})
+	if err != nil {
+		c.Fatalf("error creating user admin client: %s", err)
+	}
+	madmClnt.SetCustomTransport(s.TestSuiteCommon.client.Transport)
+	return madmClnt
 }
 
 func (s *TestSuiteIAM) getUserClient(c *check, accessKey, secretKey, sessionToken string) *minio.Client {
@@ -104,24 +152,39 @@ func runAllIAMTests(suite *TestSuiteIAM, c *check) {
 	suite.TestCannedPolicies(c)
 	suite.TestGroupAddRemove(c)
 	suite.TestServiceAccountOps(c)
+	suite.TestAddServiceAccountPerms(c)
 	suite.TearDownSuite(c)
 }
 
 func TestIAMInternalIDPServerSuite(t *testing.T) {
-	testCases := []*TestSuiteIAM{
+	baseTestCases := []TestSuiteCommon{
 		// Init and run test on FS backend with signature v4.
-		newTestSuiteIAM(TestSuiteCommon{serverType: "FS", signer: signerV4}),
+		{serverType: "FS", signer: signerV4},
 		// Init and run test on FS backend, with tls enabled.
-		newTestSuiteIAM(TestSuiteCommon{serverType: "FS", signer: signerV4, secure: true}),
+		{serverType: "FS", signer: signerV4, secure: true},
 		// Init and run test on Erasure backend.
-		newTestSuiteIAM(TestSuiteCommon{serverType: "Erasure", signer: signerV4}),
+		{serverType: "Erasure", signer: signerV4},
 		// Init and run test on ErasureSet backend.
-		newTestSuiteIAM(TestSuiteCommon{serverType: "ErasureSet", signer: signerV4}),
+		{serverType: "ErasureSet", signer: signerV4},
+	}
+	testCases := []*TestSuiteIAM{}
+	for _, bt := range baseTestCases {
+		testCases = append(testCases,
+			newTestSuiteIAM(bt, false),
+			newTestSuiteIAM(bt, true),
+		)
 	}
 	for i, testCase := range testCases {
-		t.Run(fmt.Sprintf("Test: %d, ServerType: %s", i+1, testCase.serverType), func(t *testing.T) {
-			runAllIAMTests(testCase, &check{t, testCase.serverType})
-		})
+		etcdStr := ""
+		if testCase.withEtcdBackend {
+			etcdStr = " (with etcd backend)"
+		}
+		t.Run(
+			fmt.Sprintf("Test: %d, ServerType: %s%s", i+1, testCase.serverType, etcdStr),
+			func(t *testing.T) {
+				runAllIAMTests(testCase, &check{t, testCase.serverType})
+			},
+		)
 	}
 }
 
@@ -193,6 +256,118 @@ func (s *TestSuiteIAM) TestUserCreate(c *check) {
 	err = client.MakeBucket(ctx, getRandomBucketName(), minio.MakeBucketOptions{})
 	if err == nil {
 		c.Fatalf("user account was not deleted!")
+	}
+}
+
+func (s *TestSuiteIAM) TestAddServiceAccountPerms(c *check) {
+	ctx, cancel := context.WithTimeout(context.Background(), testDefaultTimeout)
+	defer cancel()
+
+	// 1. Create a policy
+	policy1 := "deny-svc"
+	policy2 := "allow-svc"
+	policyBytes := []byte(`{
+ "Version": "2012-10-17",
+ "Statement": [
+  {
+   "Effect": "Deny",
+   "Action": [
+    "admin:CreateServiceAccount"
+   ]
+  }
+ ]
+}`)
+
+	newPolicyBytes := []byte(`{
+ "Version": "2012-10-17",
+ "Statement": [
+  {
+   "Effect": "Allow",
+   "Action": [
+    "s3:ListBucket"
+   ],
+   "Resource": [
+    "arn:aws:s3:::testbucket/*"
+   ]
+  }
+ ]
+}`)
+
+	err := s.adm.AddCannedPolicy(ctx, policy1, policyBytes)
+	if err != nil {
+		c.Fatalf("policy add error: %v", err)
+	}
+
+	err = s.adm.AddCannedPolicy(ctx, policy2, newPolicyBytes)
+	if err != nil {
+		c.Fatalf("policy add error: %v", err)
+	}
+
+	// 2. Verify that policy json is validated by server
+	invalidPolicyBytes := policyBytes[:len(policyBytes)-1]
+	err = s.adm.AddCannedPolicy(ctx, policy1+"invalid", invalidPolicyBytes)
+	if err == nil {
+		c.Fatalf("invalid policy creation success")
+	}
+
+	// 3. Create a user, associate policy and verify access
+	accessKey, secretKey := mustGenerateCredentials(c)
+	err = s.adm.SetUser(ctx, accessKey, secretKey, madmin.AccountEnabled)
+	if err != nil {
+		c.Fatalf("Unable to set user: %v", err)
+	}
+	// 3.1 check that user does not have any access to the bucket
+	uClient := s.getUserClient(c, accessKey, secretKey, "")
+	c.mustNotListObjects(ctx, uClient, "testbucket")
+
+	// 3.2 associate policy to user
+	err = s.adm.SetPolicy(ctx, policy1, accessKey, false)
+	if err != nil {
+		c.Fatalf("Unable to set policy: %v", err)
+	}
+
+	admClnt := s.getAdminClient(c, accessKey, secretKey, "")
+
+	// 3.3 check user does not have explicit permissions to create service account.
+	c.mustNotCreateSvcAccount(ctx, accessKey, admClnt)
+
+	// 4. Verify the policy appears in listing
+	ps, err := s.adm.ListCannedPolicies(ctx)
+	if err != nil {
+		c.Fatalf("policy list err: %v", err)
+	}
+	_, ok := ps[policy1]
+	if !ok {
+		c.Fatalf("policy was missing!")
+	}
+
+	// 3.2 associate policy to user
+	err = s.adm.SetPolicy(ctx, policy2, accessKey, false)
+	if err != nil {
+		c.Fatalf("Unable to set policy: %v", err)
+	}
+
+	// 3.3 check user can create service account implicitly.
+	c.mustCreateSvcAccount(ctx, accessKey, admClnt)
+
+	_, ok = ps[policy2]
+	if !ok {
+		c.Fatalf("policy was missing!")
+	}
+
+	err = s.adm.RemoveUser(ctx, accessKey)
+	if err != nil {
+		c.Fatalf("user could not be deleted: %v", err)
+	}
+
+	err = s.adm.RemoveCannedPolicy(ctx, policy1)
+	if err != nil {
+		c.Fatalf("policy del err: %v", err)
+	}
+
+	err = s.adm.RemoveCannedPolicy(ctx, policy2)
+	if err != nil {
+		c.Fatalf("policy del err: %v", err)
 	}
 }
 
@@ -697,6 +872,24 @@ func (s *TestSuiteIAM) TestServiceAccountOps(c *check) {
 			c.Fatalf("unable to delete svc acc: %v", err)
 		}
 		c.mustNotListObjects(ctx, svcClient, bucket)
+	}
+}
+
+func (c *check) mustCreateSvcAccount(ctx context.Context, tgtUser string, admClnt *madmin.AdminClient) {
+	_, err := admClnt.AddServiceAccount(ctx, madmin.AddServiceAccountReq{
+		TargetUser: tgtUser,
+	})
+	if err != nil {
+		c.Fatalf("user should be able to create service accounts %s", err)
+	}
+}
+
+func (c *check) mustNotCreateSvcAccount(ctx context.Context, tgtUser string, admClnt *madmin.AdminClient) {
+	_, err := admClnt.AddServiceAccount(ctx, madmin.AddServiceAccountReq{
+		TargetUser: tgtUser,
+	})
+	if err == nil {
+		c.Fatalf("user was able to add service accounts unexpectedly!")
 	}
 }
 

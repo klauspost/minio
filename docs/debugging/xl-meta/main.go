@@ -46,35 +46,40 @@ func main() {
 USAGE:
   {{.Name}} {{if .VisibleFlags}}[FLAGS]{{end}} METAFILES...
 
-Multiple files can be added. Files ending in ".zip" will be searched for 'xl.meta' files.  
-Wildcards are accepted: testdir/*.txt will compress all files in testdir ending with .txt
-Directories can be wildcards as well. testdir/*/*.txt will match testdir/subdir/b.txt
-Double stars means full recursive. testdir/**/xl.meta will search for all xl.meta recursively.
+Multiple files can be added. Files ending in '.zip' will be searched
+for 'xl.meta' files. Wildcards are accepted: 'testdir/*.txt' will compress
+all files in testdir ending with '.txt', directories can be wildcards
+as well. 'testdir/*/*.txt' will match 'testdir/subdir/b.txt', double stars
+means full recursive. 'testdir/**/xl.meta' will search for all xl.meta
+recursively.
 
-{{if .VisibleFlags}}
-GLOBAL FLAGS:
+FLAGS:
   {{range .VisibleFlags}}{{.}}
-  {{end}}{{end}}
+  {{end}}
 `
 
 	app.HideHelpCommand = true
 
 	app.Flags = []cli.Flag{
 		cli.BoolFlag{
-			Usage: "Print each file as a separate line without formatting",
+			Usage: "print each file as a separate line without formatting",
 			Name:  "ndjson",
 		},
 		cli.BoolFlag{
-			Usage: "Display inline data keys and sizes",
+			Usage: "display inline data keys and sizes",
 			Name:  "data",
 		},
 		cli.BoolFlag{
-			Usage: "Export inline data",
+			Usage: "export inline data",
 			Name:  "export",
 		},
 	}
 
 	app.Action = func(c *cli.Context) error {
+		if !c.Args().Present() {
+			cli.ShowAppHelpAndExit(c, 1) // last argument is exit code
+		}
+
 		ndjson := c.Bool("ndjson")
 		decode := func(r io.Reader, file string) ([]byte, error) {
 			b, err := ioutil.ReadAll(r)
@@ -90,7 +95,7 @@ GLOBAL FLAGS:
 			var data xlMetaInlineData
 			switch minor {
 			case 0:
-				_, err = msgp.CopyToJSON(buf, bytes.NewBuffer(b))
+				_, err = msgp.CopyToJSON(buf, bytes.NewReader(b))
 				if err != nil {
 					return nil, err
 				}
@@ -104,8 +109,50 @@ GLOBAL FLAGS:
 					b = nbuf
 				}
 
-				_, err = msgp.CopyToJSON(buf, bytes.NewBuffer(v))
+				_, err = msgp.CopyToJSON(buf, bytes.NewReader(v))
 				if err != nil {
+					return nil, err
+				}
+				data = b
+			case 3:
+				v, b, err := msgp.ReadBytesZC(b)
+				if err != nil {
+					return nil, err
+				}
+				if _, nbuf, err := msgp.ReadUint32Bytes(b); err == nil {
+					// Read metadata CRC (added in v2, ignore if not found)
+					b = nbuf
+				}
+
+				nVers, v, err := decodeXLHeaders(v)
+				if err != nil {
+					return nil, err
+				}
+				var versions = struct {
+					Versions []json.RawMessage
+					Headers  []json.RawMessage
+				}{
+					Versions: make([]json.RawMessage, nVers),
+					Headers:  make([]json.RawMessage, nVers),
+				}
+				err = decodeVersions(v, nVers, func(idx int, hdr, meta []byte) error {
+					var buf bytes.Buffer
+					if _, err := msgp.UnmarshalAsJSON(&buf, hdr); err != nil {
+						return err
+					}
+					versions.Headers[idx] = buf.Bytes()
+					buf = bytes.Buffer{}
+					if _, err := msgp.UnmarshalAsJSON(&buf, meta); err != nil {
+						return err
+					}
+					versions.Versions[idx] = buf.Bytes()
+					return nil
+				})
+				if err != nil {
+					return nil, err
+				}
+				enc := json.NewEncoder(buf)
+				if err := enc.Encode(versions); err != nil {
 					return nil, err
 				}
 				data = b
@@ -410,4 +457,55 @@ func (x xlMetaInlineData) files(fn func(name string, data []byte)) error {
 	}
 	return nil
 
+}
+
+const (
+	xlHeaderVersion = 2
+	xlMetaVersion   = 1
+)
+
+func decodeXLHeaders(buf []byte) (versions int, b []byte, err error) {
+	hdrVer, buf, err := msgp.ReadUintBytes(buf)
+	if err != nil {
+		return 0, buf, err
+	}
+	metaVer, buf, err := msgp.ReadUintBytes(buf)
+	if err != nil {
+		return 0, buf, err
+	}
+	if hdrVer > xlHeaderVersion {
+		return 0, buf, fmt.Errorf("decodeXLHeaders: Unknown xl header version %d", metaVer)
+	}
+	if metaVer > xlMetaVersion {
+		return 0, buf, fmt.Errorf("decodeXLHeaders: Unknown xl meta version %d", metaVer)
+	}
+	versions, buf, err = msgp.ReadIntBytes(buf)
+	if err != nil {
+		return 0, buf, err
+	}
+	if versions < 0 {
+		return 0, buf, fmt.Errorf("decodeXLHeaders: Negative version count %d", versions)
+	}
+	return versions, buf, nil
+}
+
+// decodeVersions will decode a number of versions from a buffer
+// and perform a callback for each version in order, newest first.
+// Any non-nil error is returned.
+func decodeVersions(buf []byte, versions int, fn func(idx int, hdr, meta []byte) error) (err error) {
+	var tHdr, tMeta []byte // Zero copy bytes
+	for i := 0; i < versions; i++ {
+		tHdr, buf, err = msgp.ReadBytesZC(buf)
+		if err != nil {
+			return err
+		}
+		tMeta, buf, err = msgp.ReadBytesZC(buf)
+		if err != nil {
+			return err
+		}
+		if err = fn(i, tHdr, tMeta); err != nil {
+			return err
+		}
+	}
+	return nil
 }

@@ -21,6 +21,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -48,6 +49,7 @@ var (
 )
 
 //go:generate msgp -file=$GOFILE -unexported
+//go:generate stringer -type VersionType -output=xl-storage-format-v2_string.go $GOFILE
 
 const (
 	// Breaking changes.
@@ -199,6 +201,26 @@ const (
 	xlFlagInlineData
 )
 
+func (x xlFlags) String() string {
+	var s strings.Builder
+	if x&xlFlagFreeVersion != 0 {
+		s.WriteString("FreeVersion")
+	}
+	if x&xlFlagUsesDataDir != 0 {
+		if s.Len() > 0 {
+			s.WriteByte(',')
+		}
+		s.WriteString("UsesDD")
+	}
+	if x&xlFlagInlineData != 0 {
+		if s.Len() > 0 {
+			s.WriteByte(',')
+		}
+		s.WriteString("Inline")
+	}
+	return s.String()
+}
+
 // checkXL2V1 will check if the metadata has correct header and is a known major version.
 // The remaining payload and versions are returned.
 func checkXL2V1(buf []byte) (payload []byte, major, minor uint16, err error) {
@@ -232,8 +254,19 @@ func isXL2V1Format(buf []byte) bool {
 type xlMetaV2VersionHeader struct {
 	VersionID [16]byte
 	ModTime   int64
+	Signature [4]byte
 	Type      VersionType
 	Flags     xlFlags
+}
+
+func (x xlMetaV2VersionHeader) String() string {
+	return fmt.Sprintf("Type: %s, VersionID: %s, Signature: %s, ModTime: %s, Flags: %s",
+		x.Type.String(),
+		hex.EncodeToString(x.VersionID[:]),
+		hex.EncodeToString(x.Signature[:]),
+		time.Unix(0, x.ModTime),
+		x.Flags.String(),
+	)
 }
 
 // Valid xl meta xlMetaV2Version is valid
@@ -271,9 +304,10 @@ func (j *xlMetaV2Version) header() xlMetaV2VersionHeader {
 		flags |= xlFlagInlineData
 	}
 	return xlMetaV2VersionHeader{
-		Type:      j.Type,
-		ModTime:   j.getModTime().UnixNano(),
 		VersionID: j.getVersionID(),
+		ModTime:   j.getModTime().UnixNano(),
+		Signature: j.getSignature(),
+		Type:      j.Type,
 		Flags:     flags,
 	}
 }
@@ -294,6 +328,22 @@ func (x xlMetaV2VersionHeader) UsesDataDir() bool {
 // only that it is unlikely.
 func (x xlMetaV2VersionHeader) InlineData() bool {
 	return x.Flags&xlFlagInlineData != 0
+}
+
+// signatureErr is a signature returned when an error occurs.
+var signatureErr = [4]byte{'e', 'r', 'r', 0}
+
+// getSignature will return a signature that is expected to be the same across all disks.
+func (j xlMetaV2Version) getSignature() [4]byte {
+	switch j.Type {
+	case ObjectType:
+		return j.ObjectV2.Signature()
+	case DeleteType:
+		return j.DeleteMarker.Signature()
+	case LegacyType:
+		return j.ObjectV1.Signature()
+	}
+	return signatureErr
 }
 
 // getModTime will return the ModTime of the underlying version.
@@ -335,7 +385,7 @@ func (j *xlMetaV2Version) ToFileInfo(volume, path string) (FileInfo, error) {
 }
 
 const (
-	xlHeaderVersion = 1
+	xlHeaderVersion = 2
 	xlMetaVersion   = 1
 )
 
@@ -363,6 +413,25 @@ func (j xlMetaV2DeleteMarker) ToFileInfo(volume, path string) (FileInfo, error) 
 	}
 
 	return fi, nil
+}
+
+// Signature will return a signature that is expected to be the same across all disks.
+func (j *xlMetaV2DeleteMarker) Signature() [4]byte {
+	// Shallow copy
+	c := *j
+
+	// Marshal metadata
+	crc := hashDeterministicBytes(c.MetaSys)
+	c.MetaSys = nil
+	if bts, err := c.MarshalMsg(metaDataPoolGet()); err == nil {
+		crc ^= xxhash.Sum64(bts)
+		metaDataPoolPut(bts)
+	}
+
+	// Combine upper and lower part
+	var tmp [4]byte
+	binary.LittleEndian.PutUint32(tmp[:], uint32(crc^(crc>>32)))
+	return tmp
 }
 
 // UsesDataDir returns true if this object version uses its data directory for
@@ -396,6 +465,40 @@ func (j *xlMetaV2Object) RemoveRestoreHdrs() {
 	delete(j.MetaUser, xhttp.AmzRestore)
 	delete(j.MetaUser, xhttp.AmzRestoreExpiryDays)
 	delete(j.MetaUser, xhttp.AmzRestoreRequestDate)
+}
+
+// Signature will return a signature that is expected to be the same across all disks.
+func (j *xlMetaV2Object) Signature() [4]byte {
+	// Shallow copy
+	c := *j
+	// Zero fields that will vary across disks
+	c.ErasureIndex = 0
+
+	// Nil 0 size allownil, so we don't differentiate between nil and 0 len.
+	if len(c.PartETags) == 0 {
+		c.PartETags = nil
+	}
+	if len(c.PartActualSizes) == 0 {
+		c.PartActualSizes = nil
+	}
+
+	// Get a 64 bit CRC
+	crc := hashDeterministicString(c.MetaUser)
+	crc ^= hashDeterministicBytes(c.MetaSys)
+
+	// Nil fields.
+	c.MetaSys = nil
+	c.MetaUser = nil
+
+	if bts, err := c.MarshalMsg(metaDataPoolGet()); err == nil {
+		crc ^= xxhash.Sum64(bts)
+		metaDataPoolPut(bts)
+	}
+
+	// Combine upper and lower part
+	var tmp [4]byte
+	binary.LittleEndian.PutUint32(tmp[:], uint32(crc^(crc>>32)))
+	return tmp
 }
 
 func (j xlMetaV2Object) ToFileInfo(volume, path string) (FileInfo, error) {
@@ -585,29 +688,29 @@ func readXLMetaNoData(r io.Reader, size int64) ([]byte, error) {
 	}
 }
 
-func decodeXlHeaders(buf []byte) (versions int, b []byte, err error) {
-	hdrVer, buf, err := msgp.ReadUintBytes(buf)
+func decodeXLHeaders(buf []byte) (versions int, headerV, metaV uint8, b []byte, err error) {
+	hdrVer, buf, err := msgp.ReadUint8Bytes(buf)
 	if err != nil {
-		return 0, buf, err
+		return 0, 0, 0, buf, err
 	}
-	metaVer, buf, err := msgp.ReadUintBytes(buf)
+	metaVer, buf, err := msgp.ReadUint8Bytes(buf)
 	if err != nil {
-		return 0, buf, err
+		return 0, 0, 0, buf, err
 	}
 	if hdrVer > xlHeaderVersion {
-		return 0, buf, fmt.Errorf("decodeXlHeaders: Unknown xl header version %d", metaVer)
+		return 0, 0, 0, buf, fmt.Errorf("decodeXLHeaders: Unknown xl header version %d", metaVer)
 	}
 	if metaVer > xlMetaVersion {
-		return 0, buf, fmt.Errorf("decodeXlHeaders: Unknown xl meta version %d", metaVer)
+		return 0, 0, 0, buf, fmt.Errorf("decodeXLHeaders: Unknown xl meta version %d", metaVer)
 	}
 	versions, buf, err = msgp.ReadIntBytes(buf)
 	if err != nil {
-		return 0, buf, err
+		return 0, 0, 0, buf, err
 	}
 	if versions < 0 {
-		return 0, buf, fmt.Errorf("decodeXlHeaders: Negative version count %d", versions)
+		return 0, 0, 0, buf, fmt.Errorf("decodeXLHeaders: Negative version count %d", versions)
 	}
-	return versions, buf, nil
+	return versions, hdrVer, metaVer, buf, nil
 }
 
 // decodeVersions will decode a number of versions from a buffer
@@ -680,6 +783,9 @@ type xlMetaV2 struct {
 	// data will be one or more versions indexed by versionID.
 	// To remove all data set to nil.
 	data xlMetaInlineData
+
+	// metadata version.
+	metaV uint8
 }
 
 // Load all versions of the stored data.
@@ -693,7 +799,7 @@ func (x *xlMetaV2) Load(buf []byte) error {
 }
 
 func (x *xlMetaV2) loadIndexed(buf xlMetaBuf, data xlMetaInlineData) error {
-	versions, buf, err := decodeXlHeaders(buf)
+	versions, headerV, metaV, buf, err := decodeXLHeaders(buf)
 	if err != nil {
 		return err
 	}
@@ -702,6 +808,7 @@ func (x *xlMetaV2) loadIndexed(buf xlMetaBuf, data xlMetaInlineData) error {
 	}
 	x.versions = x.versions[:versions]
 	x.data = data
+	x.metaV = metaV
 	if err = x.data.validate(); err != nil {
 		x.data.repair()
 		logger.Info("xlMetaV2.loadIndexed: data validation failed: %v. %d entries after repair", err, x.data.entries())
@@ -709,7 +816,7 @@ func (x *xlMetaV2) loadIndexed(buf xlMetaBuf, data xlMetaInlineData) error {
 
 	return decodeVersions(buf, versions, func(i int, hdr, meta []byte) error {
 		ver := &x.versions[i]
-		_, err = ver.header.UnmarshalMsg(hdr)
+		_, err = ver.header.unmarshalV(headerV, hdr)
 		if err != nil {
 			return err
 		}
@@ -794,7 +901,7 @@ func (x *xlMetaV2) loadLegacy(buf []byte) error {
 			}
 			for za0001 := range x.versions {
 				start := len(allMeta) - len(bts)
-				bts, err = tmp.UnmarshalMsg(bts)
+				bts, err = tmp.unmarshalV(1, bts)
 				if err != nil {
 					return msgp.WrapError(err, "Versions", za0001)
 				}
@@ -812,6 +919,7 @@ func (x *xlMetaV2) loadLegacy(buf []byte) error {
 			}
 		}
 	}
+	x.metaV = 1 // Fixed for legacy conversions.
 	x.sortByModTime()
 	return nil
 }
@@ -848,8 +956,8 @@ func (x *xlMetaV2) addVersion(ver xlMetaV2Version) error {
 func (x *xlMetaV2) AppendTo(dst []byte) ([]byte, error) {
 	// Header...
 	sz := len(xlHeader) + len(xlVersionCurrent) + msgp.ArrayHeaderSize + len(dst) + 3*msgp.Uint32Size
-	// Inline data
-	sz += len(x.data)
+	// Existing + Inline data
+	sz += len(dst) + len(x.data)
 	// Versions...
 	for _, ver := range x.versions {
 		sz += 32 + len(ver.meta)
@@ -893,8 +1001,12 @@ func (x *xlMetaV2) AppendTo(dst []byte) ([]byte, error) {
 	// Update size...
 	binary.BigEndian.PutUint32(dst[dataOffset-4:dataOffset], uint32(len(dst)-dataOffset))
 
-	// Add CRC of metadata.
-	dst = msgp.AppendUint32(dst, uint32(xxhash.Sum64(dst[dataOffset:])))
+	// Add CRC of metadata as fixed size (5 bytes)
+	// Prior to v1.3 this was variable sized.
+	tmp = tmp[:5]
+	tmp[0] = 0xce // muint32
+	binary.BigEndian.PutUint32(tmp[1:], uint32(xxhash.Sum64(dst[dataOffset:])))
+	dst = append(dst, tmp[:5]...)
 	return append(dst, x.data...), nil
 }
 
@@ -913,7 +1025,7 @@ func (x *xlMetaV2) getIdx(idx int) (ver *xlMetaV2Version, err error) {
 		return nil, errFileNotFound
 	}
 	var dst xlMetaV2Version
-	_, err = dst.UnmarshalMsg(x.versions[idx].meta)
+	_, err = dst.unmarshalV(x.metaV, x.versions[idx].meta)
 	if false {
 		if err == nil && x.versions[idx].header.VersionID != dst.getVersionID() {
 			panic(fmt.Sprintf("header: %x != object id: %x", x.versions[idx].header.VersionID, dst.getVersionID()))
@@ -1437,7 +1549,7 @@ func (x xlMetaV2) ToFileInfo(volume, path, versionID string) (fi FileInfo, err e
 		// We found what we need.
 		found = true
 		var version xlMetaV2Version
-		if _, err := version.UnmarshalMsg(ver.meta); err != nil {
+		if _, err := version.unmarshalV(x.metaV, ver.meta); err != nil {
 			return fi, err
 		}
 		if fi, err = version.ToFileInfo(volume, path); err != nil {
@@ -1469,7 +1581,7 @@ func (x xlMetaV2) ListVersions(volume, path string) ([]FileInfo, error) {
 
 	var dst xlMetaV2Version
 	for _, version := range x.versions {
-		_, err = dst.UnmarshalMsg(version.meta)
+		_, err = dst.unmarshalV(x.metaV, version.meta)
 		if err != nil {
 			return versions, err
 		}
@@ -1506,7 +1618,7 @@ func (x xlMetaBuf) ToFileInfo(volume, path, versionID string) (fi FileInfo, err 
 			return fi, errFileVersionNotFound
 		}
 	}
-	versions, buf, err := decodeXlHeaders(x)
+	versions, headerV, metaV, buf, err := decodeXLHeaders(x)
 	if err != nil {
 		return fi, err
 	}
@@ -1516,7 +1628,7 @@ func (x xlMetaBuf) ToFileInfo(volume, path, versionID string) (fi FileInfo, err 
 	nonFreeVersions := versions
 	found := false
 	err = decodeVersions(buf, versions, func(idx int, hdr, meta []byte) error {
-		if _, err := header.UnmarshalMsg(hdr); err != nil {
+		if _, err := header.unmarshalV(headerV, hdr); err != nil {
 			return err
 		}
 
@@ -1541,7 +1653,7 @@ func (x xlMetaBuf) ToFileInfo(volume, path, versionID string) (fi FileInfo, err 
 		// We found what we need.
 		found = true
 		var version xlMetaV2Version
-		if _, err := version.UnmarshalMsg(meta); err != nil {
+		if _, err := version.unmarshalV(metaV, meta); err != nil {
 			return err
 		}
 		if fi, err = version.ToFileInfo(volume, path); err != nil {
@@ -1569,7 +1681,7 @@ func (x xlMetaBuf) ToFileInfo(volume, path, versionID string) (fi FileInfo, err 
 // showPendingDeletes is set to true if ListVersions needs to list objects marked deleted
 // but waiting to be replicated
 func (x xlMetaBuf) ListVersions(volume, path string) ([]FileInfo, error) {
-	vers, buf, err := decodeXlHeaders(x)
+	vers, _, metaV, buf, err := decodeXLHeaders(x)
 	if err != nil {
 		return nil, err
 	}
@@ -1578,7 +1690,7 @@ func (x xlMetaBuf) ListVersions(volume, path string) ([]FileInfo, error) {
 	dst := make([]FileInfo, 0, vers)
 	var xl xlMetaV2Version
 	err = decodeVersions(buf, vers, func(idx int, hdr, meta []byte) error {
-		if _, err := xl.UnmarshalMsg(meta); err != nil {
+		if _, err := xl.unmarshalV(metaV, meta); err != nil {
 			return err
 		}
 		if !xl.Valid() {
@@ -1633,7 +1745,7 @@ func (x xlMetaBuf) ListVersionsSummary(o ListVersionOpts) (VersionSummary, error
 // IsLatestDeleteMarker returns true if latest version is a deletemarker or there are no versions.
 // If any error occurs false is returned.
 func (x xlMetaBuf) IsLatestDeleteMarker() bool {
-	vers, buf, err := decodeXlHeaders(x)
+	vers, headerV, _, buf, err := decodeXLHeaders(x)
 	if err != nil {
 		return false
 	}
@@ -1644,7 +1756,7 @@ func (x xlMetaBuf) IsLatestDeleteMarker() bool {
 
 	_ = decodeVersions(buf, vers, func(idx int, hdr, _ []byte) error {
 		var xl xlMetaV2VersionHeader
-		if _, err := xl.UnmarshalMsg(hdr); err != nil {
+		if _, err := xl.unmarshalV(headerV, hdr); err != nil {
 			return errDoneForNow
 		}
 		isDeleteMarker = xl.Type == DeleteType
