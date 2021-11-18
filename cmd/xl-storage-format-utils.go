@@ -89,7 +89,7 @@ func getAllFileInfoVersions(xlMetaBuf []byte, volume, path string) (FileInfoVers
 	}, nil
 }
 
-func getAllFileInfoVersionsSummary(xlMetaBuf []byte, o ListVersionOpts) (VersionSummary, error) {
+func getVersionSummary(xlMetaBuf []byte, o VersionSummaryOpts) (VersionSummary, error) {
 	if isXL2V1Format(xlMetaBuf) {
 		var versions VersionSummary
 		var err error
@@ -126,9 +126,10 @@ func getAllFileInfoVersionsSummary(xlMetaBuf []byte, o ListVersionOpts) (Version
 
 	return VersionSummary{
 		Versions: []xlMetaV2VersionHeader{{
-			ModTime: xlMeta.Stat.ModTime.UnixNano(),
-			Type:    LegacyType,
-			Flags:   0,
+			ModTime:   xlMeta.Stat.ModTime.UnixNano(),
+			Type:      LegacyType,
+			Flags:     0,
+			Signature: xlMeta.Signature(),
 		}},
 	}, nil
 }

@@ -49,7 +49,7 @@ var (
 )
 
 //go:generate msgp -file=$GOFILE -unexported
-//go:generate stringer -type VersionType -output=xl-storage-format-v2_string.go $GOFILE
+//go:generate stringer -type VersionType,ErasureAlgo -output=xl-storage-format-v2_string.go $GOFILE
 
 const (
 	// Breaking changes.
@@ -128,14 +128,6 @@ const (
 
 func (e ErasureAlgo) valid() bool {
 	return e > invalidErasureAlgo && e < lastErasureAlgo
-}
-
-func (e ErasureAlgo) String() string {
-	switch e {
-	case ReedSolomon:
-		return "reedsolomon"
-	}
-	return ""
 }
 
 // ChecksumAlgo defines common type of different checksum algorithms
@@ -1717,13 +1709,13 @@ type VersionSummary struct {
 	Versions []xlMetaV2VersionHeader
 }
 
-type ListVersionOpts struct {
+type VersionSummaryOpts struct {
 	SkipFreeVersions bool
 }
 
 // ListVersionsSummary will return shallow representation of all versions of objects.
-func (x xlMetaBuf) ListVersionsSummary(o ListVersionOpts) (VersionSummary, error) {
-	vers, buf, err := decodeXlHeaders(x)
+func (x xlMetaBuf) ListVersionsSummary(o VersionSummaryOpts) (VersionSummary, error) {
+	vers, _, _, buf, err := decodeXLHeaders(x)
 	if err != nil {
 		return VersionSummary{}, err
 	}
