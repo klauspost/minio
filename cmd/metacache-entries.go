@@ -59,7 +59,7 @@ func (e metaCacheEntry) hasPrefix(s string) bool {
 }
 
 // matches returns if the entries match by comparing their latest version fileinfo.
-func (e *metaCacheEntry) matches(other *metaCacheEntry) bool {
+func (e *metaCacheEntry) matches(other *metaCacheEntry, strict bool) bool {
 	if e == nil && other == nil {
 		return true
 	}
@@ -86,7 +86,11 @@ func (e *metaCacheEntry) matches(other *metaCacheEntry) bool {
 
 	// Check if each version matches...
 	for i, eVer := range eVers.versions {
-		if eVer.header != oVers.versions[i].header {
+		oVer := oVers.versions[i]
+		if eVer.header != oVer.header {
+			if !strict && eVer.header.matchesNotStrict(oVer.header) {
+				continue
+			}
 			return false
 		}
 	}
@@ -278,16 +282,15 @@ type metadataResolutionParams struct {
 	dirQuorum int    // Number if disks needed for a directory to 'exist'.
 	objQuorum int    // Number of disks needed for an object to 'exist'.
 	bucket    string // Name of the bucket. Used for generating cached fileinfo.
+	strict    bool   // Versions must match exactly, including all metadata.
 
 	// Reusable slice for resolution
-	candidates []struct {
-		n int
-		e *metaCacheEntry
-	}
+	candidates [][]xlMetaV2ShallowVersion
 }
 
 // resolve multiple entries.
 // entries are resolved by majority, then if tied by mod-time and versions.
+// Names must match on all entries in m.
 func (m metaCacheEntries) resolve(r *metadataResolutionParams) (selected *metaCacheEntry, ok bool) {
 	if len(m) == 0 {
 		return nil, false
@@ -295,14 +298,14 @@ func (m metaCacheEntries) resolve(r *metadataResolutionParams) (selected *metaCa
 
 	dirExists := 0
 	if cap(r.candidates) < len(m) {
-		r.candidates = make([]struct {
-			n int
-			e *metaCacheEntry
-		}, 0, len(m))
+		r.candidates = make([][]xlMetaV2ShallowVersion, 0, len(m))
 	}
-	r.candidates = r.candidates[0:]
+	r.candidates = r.candidates[:0]
+	objsAgree := 0
+	objsValid := 0
 	for i := range m {
 		entry := &m[i]
+		// Empty entry
 		if entry.name == "" {
 			continue
 		}
@@ -314,71 +317,53 @@ func (m metaCacheEntries) resolve(r *metadataResolutionParams) (selected *metaCa
 		}
 
 		// Get new entry metadata
-		if _, err := entry.xlmeta(); err != nil {
+		xl, err := entry.xlmeta()
+		if err != nil {
 			logger.LogIf(context.Background(), err)
 			continue
 		}
-
-		found := false
-		for i, c := range r.candidates {
-			if c.e.matches(entry) {
-				c.n++
-				r.candidates[i] = c
-				found = true
-				break
-			}
-		}
-		if !found {
-			r.candidates = append(r.candidates, struct {
-				n int
-				e *metaCacheEntry
-			}{n: 1, e: entry})
-		}
-	}
-	if selected != nil && selected.isDir() && dirExists > r.dirQuorum {
-		return selected, true
-	}
-
-	switch len(r.candidates) {
-	case 0:
+		objsValid++
 		if selected == nil {
-			return nil, false
+			if selected != nil {
+				r.candidates = r.candidates[:0]
+			}
+			r.candidates = append(r.candidates, xl.versions)
+			selected = entry
+			objsAgree = 1
+			continue
 		}
-		if !selected.isDir() || dirExists < r.dirQuorum {
-			return nil, false
+		// Names match, check meta...
+		r.candidates = append(r.candidates, xl.versions)
+		if entry.matches(selected, r.strict) {
+			objsAgree++
+			continue
 		}
-		return selected, true
-	case 1:
-		cand := r.candidates[0]
-		if cand.n < r.objQuorum {
-			return nil, false
-		}
-		return cand.e, true
-	default:
-		// Sort by matches....
-		sort.Slice(r.candidates, func(i, j int) bool {
-			return r.candidates[i].n > r.candidates[j].n
-		})
-
-		// Check if we have enough.
-		if r.candidates[0].n < r.objQuorum {
-			return nil, false
-		}
-
-		// if r.objQuorum == 1 then it is guaranteed that
-		// this resolver is for HealObjects(), so use resolveEntries()
-		// instead to resolve candidates, this check is only useful
-		// for regular cases of ListObjects()
-		if r.candidates[0].n > r.candidates[1].n && r.objQuorum > 1 {
-			ok := r.candidates[0].e != nil && r.candidates[0].e.name != ""
-			return r.candidates[0].e, ok
-		}
-
-		e := resolveEntries(r.candidates[0].e, r.candidates[1].e)
-		// Tie between two, resolve using modtime+versions.
-		ok := e != nil && e.name != ""
-		return e, ok
 	}
+	if selected != nil && selected.isDir() && dirExists >= r.dirQuorum {
+		return selected, true
+	}
+
+	if objsValid < r.objQuorum {
+		return nil, false
+	}
+	if selected != nil && objsAgree == objsValid {
+		return selected, true
+	}
+
+	// merge
+	if selected.cached == nil {
+		selected.cached = &xlMetaV2{} // Just be sure...
+	}
+	selected.cached.versions = MergeXLV2Versions(r.objQuorum, r.strict, r.candidates...)
+	// Reserialize
+	var err error
+	selected.metadata, err = selected.cached.AppendTo(metaDataPoolGet())
+	if err != nil {
+		logger.LogIf(context.Background(), err)
+		return nil, false
+	}
+	selected.cached = nil // Defensive, so we don't use buffers from other entries.
+	return selected, true
 }
 
 // firstFound returns the first found and the number of set entries.

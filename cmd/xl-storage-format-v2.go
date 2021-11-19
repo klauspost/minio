@@ -262,6 +262,14 @@ func (x xlMetaV2VersionHeader) String() string {
 	)
 }
 
+// matchesNotStrict returns whether x and o have both have non-zero version,
+// their versions match and their type match.
+func (x xlMetaV2VersionHeader) matchesNotStrict(o xlMetaV2VersionHeader) bool {
+	return x.VersionID != [16]byte{} &&
+		x.VersionID == o.VersionID &&
+		x.Type == o.Type
+}
+
 // Valid xl meta xlMetaV2Version is valid
 func (j xlMetaV2Version) Valid() bool {
 	if !j.Type.valid() {
