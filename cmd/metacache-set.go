@@ -905,7 +905,7 @@ func listPathRaw(ctx context.Context, opts listPathRawOptions) (err error) {
 				continue
 			}
 			// If exact match, we agree.
-			if current.matches(&entry, opts.bucket) {
+			if current.matches(&entry) {
 				topEntries[i] = entry
 				agree++
 				continue

@@ -18,7 +18,6 @@
 package cmd
 
 import (
-	jsoniter "github.com/json-iterator/go"
 	"github.com/zeebo/xxh3"
 )
 
@@ -44,142 +43,88 @@ func getFileInfoVersions(xlMetaBuf []byte, volume, path string) (FileInfoVersion
 }
 
 func getAllFileInfoVersions(xlMetaBuf []byte, volume, path string) (FileInfoVersions, error) {
-	if isXL2V1Format(xlMetaBuf) {
-		var versions []FileInfo
-		var err error
-		if buf, _ := isIndexedMetaV2(xlMetaBuf); buf != nil {
-			versions, err = buf.ListVersions(volume, path)
-		} else {
-			var xlMeta xlMetaV2
-			if err := xlMeta.Load(xlMetaBuf); err != nil {
-				return FileInfoVersions{}, err
-			}
-			versions, err = xlMeta.ListVersions(volume, path)
-		}
-		if err != nil || len(versions) == 0 {
+	var versions []FileInfo
+	var err error
+
+	if buf, _ := isIndexedMetaV2(xlMetaBuf); buf != nil {
+		versions, err = buf.ListVersions(volume, path)
+	} else {
+		var xlMeta xlMetaV2
+		if err := xlMeta.LoadOrConvert(xlMetaBuf); err != nil {
 			return FileInfoVersions{}, err
 		}
-
-		return FileInfoVersions{
-			Volume:        volume,
-			Name:          path,
-			Versions:      versions,
-			LatestModTime: versions[0].ModTime,
-		}, nil
+		versions, err = xlMeta.ListVersions(volume, path)
 	}
-
-	xlMeta := &xlMetaV1Object{}
-	var json = jsoniter.ConfigCompatibleWithStandardLibrary
-	if err := json.Unmarshal(xlMetaBuf, xlMeta); err != nil {
-		return FileInfoVersions{}, errFileCorrupt
-	}
-
-	fi, err := xlMeta.ToFileInfo(volume, path)
-	if err != nil {
+	if err != nil || len(versions) == 0 {
 		return FileInfoVersions{}, err
 	}
 
-	fi.IsLatest = true // No versions so current version is latest.
-	fi.XLV1 = true     // indicates older version
 	return FileInfoVersions{
 		Volume:        volume,
 		Name:          path,
-		Versions:      []FileInfo{fi},
-		LatestModTime: fi.ModTime,
+		Versions:      versions,
+		LatestModTime: versions[0].ModTime,
 	}, nil
 }
 
 func getVersionSummary(xlMetaBuf []byte, o VersionSummaryOpts) (VersionSummary, error) {
-	if isXL2V1Format(xlMetaBuf) {
-		var versions VersionSummary
-		var err error
-		if buf, _ := isIndexedMetaV2(xlMetaBuf); buf != nil {
-			versions, err = buf.ListVersionsSummary(o)
-		} else {
-			var xlMeta xlMetaV2
-			if err := xlMeta.Load(xlMetaBuf); err != nil {
-				return VersionSummary{}, err
-			}
-			versions = VersionSummary{Versions: make([]xlMetaV2VersionHeader, len(xlMeta.versions))}
-			n := 0
-			for _, ver := range xlMeta.versions {
-				versions.Versions[n] = ver.header
-				if o.SkipFreeVersions && ver.header.FreeVersion() {
-					continue
-				}
-				n++
-			}
-			versions.Versions = versions.Versions[:n]
-		}
-		if err != nil || len(versions.Versions) == 0 {
+	var versions VersionSummary
+	var err error
+	if buf, _ := isIndexedMetaV2(xlMetaBuf); buf != nil {
+		versions, err = buf.ListVersionsSummary(o)
+	} else {
+		var xlMeta xlMetaV2
+		if err := xlMeta.LoadOrConvert(xlMetaBuf); err != nil {
 			return VersionSummary{}, err
 		}
-
-		return versions, nil
+		versions = VersionSummary{Versions: make([]xlMetaV2VersionHeader, len(xlMeta.versions))}
+		n := 0
+		for _, ver := range xlMeta.versions {
+			versions.Versions[n] = ver.header
+			if o.SkipFreeVersions && ver.header.FreeVersion() {
+				continue
+			}
+			n++
+		}
+		versions.Versions = versions.Versions[:n]
+	}
+	if err != nil || len(versions.Versions) == 0 {
+		return VersionSummary{}, err
 	}
 
-	xlMeta := &xlMetaV1Object{}
-	var json = jsoniter.ConfigCompatibleWithStandardLibrary
-	if err := json.Unmarshal(xlMetaBuf, xlMeta); err != nil {
-		return VersionSummary{}, errFileCorrupt
-	}
-
-	return VersionSummary{
-		Versions: []xlMetaV2VersionHeader{{
-			ModTime:   xlMeta.Stat.ModTime.UnixNano(),
-			Type:      LegacyType,
-			Flags:     0,
-			Signature: xlMeta.Signature(),
-		}},
-	}, nil
+	return versions, nil
 }
 
 func getFileInfo(xlMetaBuf []byte, volume, path, versionID string, data bool) (FileInfo, error) {
-	if isXL2V1Format(xlMetaBuf) {
-		var fi FileInfo
-		var err error
-		var inData xlMetaInlineData
-		if buf, data := isIndexedMetaV2(xlMetaBuf); buf != nil {
-			inData = data
-			fi, err = buf.ToFileInfo(volume, path, versionID)
-		} else {
-			var xlMeta xlMetaV2
-			if err := xlMeta.Load(xlMetaBuf); err != nil {
-				return FileInfo{}, err
-			}
-			inData = xlMeta.data
-			fi, err = xlMeta.ToFileInfo(volume, path, versionID)
+	var fi FileInfo
+	var err error
+	var inData xlMetaInlineData
+	if buf, data := isIndexedMetaV2(xlMetaBuf); buf != nil {
+		inData = data
+		fi, err = buf.ToFileInfo(volume, path, versionID)
+	} else {
+		var xlMeta xlMetaV2
+		if err := xlMeta.LoadOrConvert(xlMetaBuf); err != nil {
+			return FileInfo{}, err
 		}
-		if !data || err != nil {
-			return fi, err
-		}
-		versionID := fi.VersionID
-		if versionID == "" {
-			versionID = nullVersionID
-		}
-		fi.Data = inData.find(versionID)
-		if len(fi.Data) == 0 {
-			// PR #11758 used DataDir, preserve it
-			// for users who might have used master
-			// branch
-			fi.Data = inData.find(fi.DataDir)
-		}
-		return fi, nil
+		inData = xlMeta.data
+		fi, err = xlMeta.ToFileInfo(volume, path, versionID)
 	}
-
-	xlMeta := &xlMetaV1Object{}
-	var json = jsoniter.ConfigCompatibleWithStandardLibrary
-	if err := json.Unmarshal(xlMetaBuf, xlMeta); err != nil {
-		return FileInfo{}, errFileCorrupt
+	if !data || err != nil {
+		return fi, err
 	}
-
-	fi, err := xlMeta.ToFileInfo(volume, path)
-	if err == errFileNotFound && versionID != "" {
-		return fi, errFileVersionNotFound
+	versionID = fi.VersionID
+	if versionID == "" {
+		versionID = nullVersionID
 	}
-	fi.IsLatest = true // No versions so current version is latest.
-	fi.XLV1 = true     // indicates older version
-	return fi, err
+	fi.Data = inData.find(versionID)
+	if len(fi.Data) == 0 {
+		// PR #11758 used DataDir, preserve it
+		// for users who might have used master
+		// branch
+		fi.Data = inData.find(fi.DataDir)
+	}
+	return fi, nil
 }
 
 // getXLDiskLoc will return the pool/set/disk id if it can be located in the object layer.

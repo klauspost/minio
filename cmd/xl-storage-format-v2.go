@@ -33,6 +33,7 @@ import (
 
 	"github.com/cespare/xxhash/v2"
 	"github.com/google/uuid"
+	jsoniter "github.com/json-iterator/go"
 	"github.com/minio/minio/internal/bucket/lifecycle"
 	"github.com/minio/minio/internal/bucket/replication"
 	xhttp "github.com/minio/minio/internal/http"
@@ -778,6 +779,26 @@ type xlMetaV2 struct {
 
 	// metadata version.
 	metaV uint8
+}
+
+// LoadOrConvert will load the metadata in the buffer.
+// If this is a legacy format, it will automatically be converted to XLV2.
+func (x *xlMetaV2) LoadOrConvert(buf []byte) error {
+	if isXL2V1Format(buf) {
+		return x.Load(buf)
+	}
+
+	xlMeta := &xlMetaV1Object{}
+	var json = jsoniter.ConfigCompatibleWithStandardLibrary
+	if err := json.Unmarshal(buf, xlMeta); err != nil {
+		return errFileCorrupt
+	}
+	if len(x.versions) > 0 {
+		x.versions = x.versions[:0]
+	}
+	x.data = nil
+	x.metaV = xlMetaVersion
+	return x.AddLegacy(xlMeta)
 }
 
 // Load all versions of the stored data.
@@ -1595,6 +1616,110 @@ func (x xlMetaV2) ListVersions(volume, path string) ([]FileInfo, error) {
 		versions[0].IsLatest = true
 	}
 	return versions, nil
+}
+
+// MergeXLV2Versions will merge all versions that have at least quorum
+// entries in all metas.
+// Quorum must be the minimum number of matching metadata files.
+// Quorum should be > 1 and <= len(versions).
+// If strict is set to false, entries that match type
+func MergeXLV2Versions(quorum int, strict bool, versions ...[]xlMetaV2ShallowVersion) (merged []xlMetaV2ShallowVersion) {
+	if len(versions) < quorum || len(versions) == 0 {
+		return nil
+	}
+	if len(versions) == 1 {
+		return versions[0]
+	}
+	// Our result
+	merged = make([]xlMetaV2ShallowVersion, 0, len(versions[0]))
+	tops := make([]xlMetaV2ShallowVersion, len(versions))
+	var emptyVersionID [16]byte
+	for {
+		// Step 1 create slice with all top versions.
+		tops = tops[:0]
+		var topSig [4]byte
+		consistent := true // Are all signatures consistent (shortcut)
+		for _, vers := range versions {
+			if len(vers) == 0 {
+				consistent = false
+				continue
+			}
+			ver := vers[0]
+			if len(tops) == 0 {
+				consistent = true
+				topSig = ver.header.Signature
+			}
+			consistent = consistent && topSig == ver.header.Signature
+			tops = append(tops, vers[0])
+		}
+		// Check if done...
+		if len(tops) < quorum {
+			// We couldn't gather enough for quorum
+			break
+		}
+		if consistent {
+			// All had the same signature, easy.
+			merged = append(merged, tops[0])
+			for i := range versions {
+				versions[i] = versions[i][1:]
+			}
+			continue
+		}
+
+		// Find the latest.
+		var latest xlMetaV2ShallowVersion
+		var latestCount int
+		for i, ver := range tops {
+			if i == 0 || ver.header.ModTime > latest.header.ModTime {
+				latest = ver
+				latestCount = 1
+				continue
+			}
+			if ver.header == latest.header {
+				latestCount++
+				continue
+			}
+			// Mismatch, but older.
+			if strict || ver.header.VersionID == emptyVersionID {
+				// null version id, disregard.
+				continue
+			}
+			if ver.header.VersionID == latest.header.VersionID && ver.header.Type == ver.header.Type {
+				// If non-nil version ID and it matches, assume match, but keep newest.
+				latestCount++
+			}
+		}
+		if latestCount >= quorum {
+			merged = append(merged, latest)
+		}
+
+		// Remove from all streams up until latest modtime or if selected.
+		for i, vers := range versions {
+			for _, ver := range vers {
+				// Truncate later modtimes, not selected.
+				if ver.header.ModTime > ver.header.ModTime {
+					versions[i] = versions[i][1:]
+					continue
+				}
+				// Truncate matches
+				if ver.header == latest.header {
+					versions[i] = versions[i][1:]
+					continue
+				}
+
+				// Truncate non-empty version and type matches
+				if !strict && ver.header.VersionID != emptyVersionID &&
+					ver.header.VersionID == latest.header.VersionID &&
+					ver.header.Type == ver.header.Type {
+					versions[i] = versions[i][1:]
+					continue
+				}
+				// Keep top entry (and remaining)...
+				break
+			}
+		}
+	}
+	return merged
 }
 
 type xlMetaBuf []byte
