@@ -32,6 +32,8 @@ func getFileInfoVersions(xlMetaBuf []byte, volume, path string) (FileInfoVersion
 		if !fi.TierFreeVersion() {
 			fivs.Versions[n] = fi
 			n++
+		} else {
+			fivs.FreeVersions = append(fivs.FreeVersions, fi)
 		}
 	}
 	fivs.Versions = fivs.Versions[:n]
