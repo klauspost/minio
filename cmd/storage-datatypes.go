@@ -93,7 +93,8 @@ type FileInfoVersions struct {
 	// latest version.
 	LatestModTime time.Time `msg:"lm"`
 
-	Versions []FileInfo `msg:"vs"`
+	Versions     []FileInfo `msg:"vs"`
+	FreeVersions []FileInfo `msg:"fvs"`
 }
 
 // findVersionIndex will return the version index where the version
@@ -183,6 +184,21 @@ type FileInfo struct {
 	// no other caller must set this value other than multi-object delete call.
 	// usage in other calls in undefined please avoid.
 	Idx int `msg:"i"`
+}
+
+// GetDataDir returns an expected dataDir given FileInfo
+// - deleteMarker returns "delete-marker"
+// - returns "legacy" if FileInfo is XLV1 and DataDir is
+//   empty, returns DataDir otherwise
+// - returns "dataDir"
+func (fi FileInfo) GetDataDir() string {
+	if fi.Deleted {
+		return "delete-marker"
+	}
+	if fi.XLV1 && fi.DataDir == "" {
+		return "legacy"
+	}
+	return fi.DataDir
 }
 
 // InlineData returns true if object contents are inlined alongside its metadata.

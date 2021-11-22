@@ -105,8 +105,6 @@ type xlStorage struct {
 	formatLastCheck time.Time
 
 	diskInfoCache timedValue
-
-	ctx context.Context
 	sync.RWMutex
 
 	// mutex to prevent concurrent read operations overloading walks.
@@ -255,7 +253,6 @@ func newXLStorage(ep Endpoint) (*xlStorage, error) {
 		diskPath:   path,
 		endpoint:   ep,
 		globalSync: env.Get(config.EnvFSOSync, config.EnableOff) == config.EnableOn,
-		ctx:        GlobalContext,
 		rootDisk:   rootDisk,
 		poolIndex:  -1,
 		setIndex:   -1,
@@ -455,7 +452,7 @@ func (s *xlStorage) NSScanner(ctx context.Context, cache dataUsageCache, updates
 		// Remove filename which is the meta file.
 		item.transformMetaDir()
 
-		fivs, err := getAllFileInfoVersions(buf, item.bucket, item.objectPath())
+		fivs, err := getFileInfoVersions(buf, item.bucket, item.objectPath())
 		if err != nil {
 			if intDataUpdateTracker.debug {
 				console.Debugf(color.Green("scannerBucket:")+" reading xl.meta failed: %v: %w\n", item.Path, err)
@@ -468,6 +465,13 @@ func (s *xlStorage) NSScanner(ctx context.Context, cache dataUsageCache, updates
 			sizeS.tiers = make(map[string]tierStats)
 		}
 		atomic.AddUint64(&globalScannerStats.accTotalObjects, 1)
+		fivs.Versions, err = item.applyVersionActions(ctx, objAPI, fivs.Versions)
+		if err != nil {
+			if intDataUpdateTracker.debug {
+				console.Debugf(color.Green("scannerBucket:")+" applying version actions failed: %v: %w\n", item.Path, err)
+			}
+			return sizeSummary{}, errSkipFile
+		}
 		for _, version := range fivs.Versions {
 			atomic.AddUint64(&globalScannerStats.accTotalVersions, 1)
 			oi := version.ToObjectInfo(item.bucket, item.objectPath())
@@ -491,6 +495,12 @@ func (s *xlStorage) NSScanner(ctx context.Context, cache dataUsageCache, updates
 				tier = oi.TransitionedObject.Tier
 			}
 			sizeS.tiers[tier] = sizeS.tiers[tier].add(oi.tierStats())
+		}
+
+		// apply tier sweep action on free versions
+		for _, freeVersion := range fivs.FreeVersions {
+			oi := freeVersion.ToObjectInfo(item.bucket, item.objectPath())
+			item.applyTierObjSweep(ctx, objAPI, oi)
 		}
 		return sizeS, nil
 	})
@@ -1961,6 +1971,9 @@ func (s *xlStorage) Delete(ctx context.Context, volume string, path string, recu
 // RenameData - rename source path to destination path atomically, metadata and data directory.
 func (s *xlStorage) RenameData(ctx context.Context, srcVolume, srcPath string, fi FileInfo, dstVolume, dstPath string) (err error) {
 	defer func() {
+		if err != nil {
+			logger.LogIf(ctx, err)
+		}
 		if err == nil {
 			if s.globalSync {
 				globalSync()
@@ -2054,7 +2067,7 @@ func (s *xlStorage) RenameData(ctx context.Context, srcVolume, srcPath string, f
 	if len(dstBuf) > 0 {
 		if isXL2V1Format(dstBuf) {
 			if err = xlMeta.Load(dstBuf); err != nil {
-				logger.LogIf(s.ctx, err)
+				logger.LogIf(ctx, err)
 				// Data appears corrupt. Drop data.
 				xlMeta = xlMetaV2{}
 			}
@@ -2063,11 +2076,11 @@ func (s *xlStorage) RenameData(ctx context.Context, srcVolume, srcPath string, f
 			xlMetaLegacy := &xlMetaV1Object{}
 			var json = jsoniter.ConfigCompatibleWithStandardLibrary
 			if err := json.Unmarshal(dstBuf, xlMetaLegacy); err != nil {
-				logger.LogIf(s.ctx, err)
+				logger.LogIf(ctx, err)
 				// Data appears corrupt. Drop data.
 			} else {
 				if err = xlMeta.AddLegacy(xlMetaLegacy); err != nil {
-					logger.LogIf(s.ctx, err)
+					logger.LogIf(ctx, err)
 				}
 				legacyPreserved = true
 			}
@@ -2204,7 +2217,6 @@ func (s *xlStorage) RenameData(ctx context.Context, srcVolume, srcPath string, f
 					s.deleteFile(dstVolumeDir, legacyDataPath, true)
 				}
 				s.deleteFile(dstVolumeDir, dstDataPath, false)
-
 				if err != errFileNotFound {
 					logger.LogIf(ctx, err)
 				}
@@ -2382,8 +2394,8 @@ func (s *xlStorage) VerifyFile(ctx context.Context, volume, path string, fi File
 				errVolumeNotFound,
 				errFileCorrupt,
 			}...) {
-				logger.GetReqInfo(s.ctx).AppendTags("disk", s.String())
-				logger.LogIf(s.ctx, err)
+				logger.GetReqInfo(ctx).AppendTags("disk", s.String())
+				logger.LogIf(ctx, err)
 			}
 			return err
 		}
