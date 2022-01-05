@@ -388,6 +388,9 @@ func (fs *FSObjects) scanBucket(ctx context.Context, bucket string, cache dataUs
 		atomic.AddUint64(&globalScannerStats.accTotalObjects, 1)
 		sz := item.applyActions(ctx, fs, oi, &sizeSummary{})
 		if sz >= 0 {
+			if oi.IsCompressed() && oi.Size < sz {
+				return sizeSummary{totalSize: sz, versions: 1, compSaved: sz - oi.Size}, nil
+			}
 			return sizeSummary{totalSize: sz, versions: 1}, nil
 		}
 

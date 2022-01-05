@@ -52,6 +52,7 @@ type dataUsageEntry struct {
 	Size             int64                `msg:"sz"`
 	Objects          uint64               `msg:"os"`
 	Versions         uint64               `msg:"vs"` // Versions that are not delete markers.
+	CompressSaved    int64                `msg:"cs"` // Bytes saved by compression.
 	ObjSizes         sizeHistogram        `msg:"szs"`
 	ReplicationStats *replicationAllStats `msg:"rs,omitempty"`
 	AllTierStats     *allTierStats        `msg:"ats,omitempty"`
@@ -295,6 +296,7 @@ type dataUsageCacheInfo struct {
 
 func (e *dataUsageEntry) addSizes(summary sizeSummary) {
 	e.Size += summary.totalSize
+	e.CompressSaved += summary.compSaved
 	e.Versions += summary.versions
 	e.ObjSizes.add(summary.totalSize)
 
@@ -783,6 +785,7 @@ func (d *dataUsageCache) bucketsUsageInfo(buckets []BucketInfo) map[string]Bucke
 		flat := d.flatten(*e)
 		bui := BucketUsageInfo{
 			Size:                 uint64(flat.Size),
+			CompressionSaved:     flat.CompressSaved,
 			ObjectsCount:         flat.Objects,
 			ObjectSizesHistogram: flat.ObjSizes.toMap(),
 		}
@@ -814,6 +817,7 @@ func (d *dataUsageCache) bucketUsageInfo(bucket string) BucketUsageInfo {
 	flat := d.flatten(*e)
 	bui := BucketUsageInfo{
 		Size:                 uint64(flat.Size),
+		CompressionSaved:     flat.CompressSaved,
 		ObjectsCount:         flat.Objects,
 		ObjectSizesHistogram: flat.ObjSizes.toMap(),
 	}

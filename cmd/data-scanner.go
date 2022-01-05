@@ -841,6 +841,7 @@ type sizeSummary struct {
 	pendingSize     int64
 	failedSize      int64
 	replicaSize     int64
+	compSaved       int64
 	pendingCount    uint64
 	failedCount     uint64
 	replTargetStats map[string]replTargetSizeSummary

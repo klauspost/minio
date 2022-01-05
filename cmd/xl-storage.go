@@ -500,6 +500,9 @@ func (s *xlStorage) NSScanner(ctx context.Context, cache dataUsageCache, updates
 				sizeS.versions++
 			}
 			sizeS.totalSize += sz
+			if oi.IsCompressed() && oi.Size > sz {
+				sizeS.compSaved += sz - oi.Size
+			}
 
 			// Skip tier accounting if,
 			// 1. no tiers configured

@@ -46,6 +46,8 @@ type BucketTargetUsageInfo struct {
 // - object size histogram per bucket
 type BucketUsageInfo struct {
 	Size uint64 `json:"size"`
+	// Bytes saved by compression
+	CompressionSaved int64 `json:"compression_saved"`
 	// Following five fields suffixed with V1 are here for backward compatibility
 	// Total Size for objects that have not yet been replicated
 	ReplicationPendingSizeV1 uint64 `json:"objectsPendingReplicationTotalSize"`
