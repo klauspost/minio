@@ -728,6 +728,7 @@ func (er erasureObjects) PutObjectPart(ctx context.Context, bucket, object, uplo
 		ModTime:    UTCNow(),
 		Index:      index,
 		Checksums:  r.ContentCRC(),
+		Placement:  0,
 	}
 	fi.Parts = []ObjectPartInfo{partInfo}
 	partFI, err := fi.MarshalMsg(nil)
@@ -884,7 +885,7 @@ func (er erasureObjects) ListObjectParts(ctx context.Context, bucket, object, up
 		}
 
 		// Add the current part.
-		fi.AddObjectPart(partI.Number, partI.ETag, partI.Size, partI.ActualSize, partI.ModTime, partI.Index, partI.Checksums)
+		fi.AddObjectPart(partI.Number, partI.ETag, partI.Size, partI.ActualSize, partI.ModTime, partI.Index, partI.Checksums, 0)
 	}
 
 	// Only parts with higher part numbers will be listed.
@@ -1051,7 +1052,7 @@ func (er erasureObjects) CompleteMultipartUpload(ctx context.Context, bucket str
 		}
 
 		// Add the current part.
-		fi.AddObjectPart(partI.Number, partI.ETag, partI.Size, partI.ActualSize, partI.ModTime, partI.Index, partI.Checksums)
+		fi.AddObjectPart(partI.Number, partI.ETag, partI.Size, partI.ActualSize, partI.ModTime, partI.Index, partI.Checksums, 0)
 	}
 
 	// Calculate full object size.
@@ -1147,6 +1148,7 @@ func (er erasureObjects) CompleteMultipartUpload(ctx context.Context, bucket str
 			ModTime:    expPart.ModTime,
 			Index:      expPart.Index,
 			Checksums:  nil, // Not transferred since we do not need it.
+			Placement:  0,
 		}
 	}
 
