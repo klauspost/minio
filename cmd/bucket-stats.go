@@ -31,18 +31,18 @@ type ReplicationLatency struct {
 }
 
 // Merge two replication latency into a new one
-func (rl ReplicationLatency) merge(other ReplicationLatency) (newReplLatency ReplicationLatency) {
+func (rl *ReplicationLatency) merge(other ReplicationLatency) (newReplLatency ReplicationLatency) {
 	newReplLatency.UploadHistogram = rl.UploadHistogram.Merge(other.UploadHistogram)
 	return
 }
 
 // Get upload latency of each object size range
-func (rl ReplicationLatency) getUploadLatency() (ret map[string]uint64) {
+func (rl *ReplicationLatency) getUploadLatency() (ret map[string]uint64) {
 	ret = make(map[string]uint64)
 	avg := rl.UploadHistogram.GetAvgData()
 	for k, v := range avg {
 		// Convert nanoseconds to milliseconds
-		ret[sizeTagToString(k)] = uint64(v.avg() / time.Millisecond)
+		ret[sizeTagToString(k)] = uint64(v.AvgTime() / time.Millisecond)
 	}
 	return
 }

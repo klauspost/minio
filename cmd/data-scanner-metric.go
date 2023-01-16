@@ -9,6 +9,7 @@ import (
 
 	"github.com/minio/madmin-go/v2"
 	"github.com/minio/minio/internal/bucket/lifecycle"
+	"github.com/minio/minio/internal/stats"
 )
 
 //go:generate stringer -type=scannerMetric -trimprefix=scannerMetric $GOFILE
@@ -18,11 +19,11 @@ type scannerMetric uint8
 type scannerMetrics struct {
 	// All fields must be accessed atomically and aligned.
 	operations [scannerMetricLast]uint64
-	latency    [scannerMetricLastRealtime]lockedLastMinuteLatency
+	latency    [scannerMetricLastRealtime]stats.LastMinuteLatency
 
 	// actions records actions performed.
 	actions        [lifecycle.ActionCount]uint64
-	actionsLatency [lifecycle.ActionCount]lockedLastMinuteLatency
+	actionsLatency [lifecycle.ActionCount]stats.LastMinuteLatency
 
 	// currentPaths contains (string,*currentPathTracker) for each disk processing.
 	// Alignment not required.
@@ -76,7 +77,7 @@ func (p *scannerMetrics) log(s scannerMetric, paths ...string) func() {
 
 		atomic.AddUint64(&p.operations[s], 1)
 		if s < scannerMetricLastRealtime {
-			p.latency[s].add(duration)
+			p.latency[s].Add(duration)
 		}
 
 		if s > scannerMetricStartTrace && globalTrace.NumSubscribers(madmin.TraceScanner) > 0 {
@@ -94,7 +95,7 @@ func (p *scannerMetrics) time(s scannerMetric) func() {
 
 		atomic.AddUint64(&p.operations[s], 1)
 		if s < scannerMetricLastRealtime {
-			p.latency[s].add(duration)
+			p.latency[s].Add(duration)
 		}
 	}
 }
@@ -108,7 +109,7 @@ func (p *scannerMetrics) timeSize(s scannerMetric) func(sz int) {
 
 		atomic.AddUint64(&p.operations[s], 1)
 		if s < scannerMetricLastRealtime {
-			p.latency[s].addSize(duration, int64(sz))
+			p.latency[s].AddSize(duration, int64(sz))
 		}
 	}
 }
@@ -118,7 +119,7 @@ func (p *scannerMetrics) timeSize(s scannerMetric) func(sz int) {
 func (p *scannerMetrics) incTime(s scannerMetric, d time.Duration) {
 	atomic.AddUint64(&p.operations[s], 1)
 	if s < scannerMetricLastRealtime {
-		p.latency[s].add(d)
+		p.latency[s].Add(d)
 	}
 }
 
@@ -133,7 +134,7 @@ func (p *scannerMetrics) timeILM(a lifecycle.Action) func() {
 	return func() {
 		duration := time.Since(startTime)
 		atomic.AddUint64(&p.actions[a], 1)
-		p.actionsLatency[a].add(duration)
+		p.actionsLatency[a].Add(duration)
 	}
 }
 
@@ -204,11 +205,11 @@ func (p *scannerMetrics) lifetime(m scannerMetric) uint64 {
 
 // lastMinute returns the last minute statistics of a metric.
 // m should be < scannerMetricLastRealtime
-func (p *scannerMetrics) lastMinute(m scannerMetric) AccElem {
+func (p *scannerMetrics) lastMinute(m scannerMetric) stats.AccElem {
 	if m >= scannerMetricLastRealtime {
-		return AccElem{}
+		return stats.AccElem{}
 	}
-	val := p.latency[m].total()
+	val := p.latency[m].GetTotal()
 	return val
 }
 
@@ -222,11 +223,11 @@ func (p *scannerMetrics) lifetimeActions(a lifecycle.Action) uint64 {
 }
 
 // lastMinuteActions returns the last minute statistics of an ilm metric.
-func (p *scannerMetrics) lastMinuteActions(a lifecycle.Action) AccElem {
+func (p *scannerMetrics) lastMinuteActions(a lifecycle.Action) stats.AccElem {
 	if a == lifecycle.NoneAction || a >= lifecycle.ActionCount {
-		return AccElem{}
+		return stats.AccElem{}
 	}
-	val := p.actionsLatency[a].total()
+	val := p.actionsLatency[a].GetTotal()
 	return val
 }
 
@@ -277,7 +278,7 @@ func (p *scannerMetrics) report() madmin.ScannerMetrics {
 	for i := scannerMetric(0); i < scannerMetricLastRealtime; i++ {
 		lm := p.lastMinute(i)
 		if lm.N > 0 {
-			m.LastMinute.Actions[i.String()] = lm.asTimedAction()
+			m.LastMinute.Actions[i.String()] = lm.AsTimedAction()
 		}
 	}
 	if len(m.LastMinute.Actions) == 0 {

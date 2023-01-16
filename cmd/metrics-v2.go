@@ -589,7 +589,77 @@ func getInternodeTCPAvgDuration() MetricDescription {
 		Namespace: interNodeMetricNamespace,
 		Subsystem: trafficSubsystem,
 		Name:      "dial_avg_time",
-		Help:      "Average time of internodes TCP dial calls",
+		Help:      "Average time of internode TCP dial calls",
+		Type:      gaugeMetric,
+	}
+}
+
+func getInternodeTCPCount() MetricDescription {
+	return MetricDescription{
+		Namespace: interNodeMetricNamespace,
+		Subsystem: trafficSubsystem,
+		Name:      "dial_avg_time",
+		Help:      "Total number of internode TCP dial calls, last minute",
+		Type:      gaugeMetric,
+	}
+}
+
+func getInternodeDNSErrors() MetricDescription {
+	return MetricDescription{
+		Namespace: interNodeMetricNamespace,
+		Subsystem: trafficSubsystem,
+		Name:      "dns_errors",
+		Help:      "Total number of internode DNS failures",
+		Type:      counterMetric,
+	}
+}
+
+func getInternodeDNSDuration() MetricDescription {
+	return MetricDescription{
+		Namespace: interNodeMetricNamespace,
+		Subsystem: trafficSubsystem,
+		Name:      "dns_avg_time",
+		Help:      "Average time of internode DNS lookup, last minute",
+		Type:      gaugeMetric,
+	}
+}
+
+func getInternodeDNSCount() MetricDescription {
+	return MetricDescription{
+		Namespace: interNodeMetricNamespace,
+		Subsystem: trafficSubsystem,
+		Name:      "dns_lookups_1m",
+		Help:      "Total number of internode DNS lookups, last minute",
+		Type:      gaugeMetric,
+	}
+}
+
+func getInternodeTLSErrors() MetricDescription {
+	return MetricDescription{
+		Namespace: interNodeMetricNamespace,
+		Subsystem: trafficSubsystem,
+		Name:      "tls_errors",
+		Help:      "Total number of internode TLS handshake failures",
+		Type:      counterMetric,
+	}
+}
+
+func getInternodeTLSDuration() MetricDescription {
+	return MetricDescription{
+		Namespace: interNodeMetricNamespace,
+		Subsystem: trafficSubsystem,
+		Name:      "tls_avg_time_1m",
+		Help:      "Average time of internode TLS handshakes, last minute",
+		Type:      gaugeMetric,
+	}
+}
+
+func getInternodeTLSCount() MetricDescription {
+	return MetricDescription{
+		Namespace: interNodeMetricNamespace,
+		Subsystem: trafficSubsystem,
+		Name:      "tls_connections_1m",
+		Help:      "Total number of internode TLS connections established, last minute",
 		Type:      gaugeMetric,
 	}
 }
@@ -1758,6 +1828,7 @@ func getNetworkMetrics() *MetricsGroup {
 				Description: getInternodeFailedRequests(),
 				Value:       float64(rpcStats.Errs),
 			})
+			// Connect calls:
 			metrics = append(metrics, Metric{
 				Description: getInternodeTCPDialTimeout(),
 				Value:       float64(rpcStats.DialErrs),
@@ -1766,6 +1837,37 @@ func getNetworkMetrics() *MetricsGroup {
 				Description: getInternodeTCPAvgDuration(),
 				Value:       float64(rpcStats.DialAvgDuration),
 			})
+			metrics = append(metrics, Metric{
+				Description: getInternodeTCPCount(),
+				Value:       float64(rpcStats.DialLastMin),
+			})
+			// TLS:
+			metrics = append(metrics, Metric{
+				Description: getInternodeTLSErrors(),
+				Value:       float64(rpcStats.TLSErrs),
+			})
+			metrics = append(metrics, Metric{
+				Description: getInternodeTLSDuration(),
+				Value:       float64(rpcStats.TLSAvgDuration),
+			})
+			metrics = append(metrics, Metric{
+				Description: getInternodeTLSCount(),
+				Value:       float64(rpcStats.TLSLastMin),
+			})
+			// DNS:
+			metrics = append(metrics, Metric{
+				Description: getInternodeDNSErrors(),
+				Value:       float64(rpcStats.DNSErrs),
+			})
+			metrics = append(metrics, Metric{
+				Description: getInternodeDNSDuration(),
+				Value:       float64(rpcStats.DNSAvgDuration),
+			})
+			metrics = append(metrics, Metric{
+				Description: getInternodeDNSCount(),
+				Value:       float64(rpcStats.DNSLastMin),
+			})
+
 			metrics = append(metrics, Metric{
 				Description: getInterNodeSentBytesMD(),
 				Value:       float64(connStats.TotalOutputBytes),

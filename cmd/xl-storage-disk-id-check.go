@@ -31,6 +31,7 @@ import (
 
 	"github.com/minio/madmin-go/v2"
 	"github.com/minio/minio/internal/logger"
+	"github.com/minio/minio/internal/stats"
 	"github.com/minio/pkg/env"
 )
 
@@ -77,7 +78,7 @@ const (
 type xlStorageDiskIDCheck struct {
 	// apiCalls should be placed first so alignment is guaranteed for atomic operations.
 	apiCalls     [storageMetricLast]uint64
-	apiLatencies [storageMetricLast]*lockedLastMinuteLatency
+	apiLatencies [storageMetricLast]*stats.LastMinuteLatency
 	diskID       string
 	storage      *xlStorage
 	health       *diskHealthTracker
@@ -89,11 +90,11 @@ func (p *xlStorageDiskIDCheck) getMetrics() DiskMetrics {
 		p.metricsCache.TTL = 100 * time.Millisecond
 		p.metricsCache.Update = func() (interface{}, error) {
 			diskMetric := DiskMetrics{
-				LastMinute: make(map[string]AccElem, len(p.apiLatencies)),
+				LastMinute: make(map[string]stats.AccElem, len(p.apiLatencies)),
 				APICalls:   make(map[string]uint64, len(p.apiCalls)),
 			}
 			for i, v := range p.apiLatencies {
-				diskMetric.LastMinute[storageMetric(i).String()] = v.total()
+				diskMetric.LastMinute[storageMetric(i).String()] = v.GetTotal()
 			}
 			for i := range p.apiCalls {
 				diskMetric.APICalls[storageMetric(i).String()] = atomic.LoadUint64(&p.apiCalls[i])
@@ -105,38 +106,13 @@ func (p *xlStorageDiskIDCheck) getMetrics() DiskMetrics {
 	return m.(DiskMetrics)
 }
 
-type lockedLastMinuteLatency struct {
-	sync.Mutex
-	lastMinuteLatency
-}
-
-func (e *lockedLastMinuteLatency) add(value time.Duration) {
-	e.Lock()
-	defer e.Unlock()
-	e.lastMinuteLatency.add(value)
-}
-
-// addSize will add a duration and size.
-func (e *lockedLastMinuteLatency) addSize(value time.Duration, sz int64) {
-	e.Lock()
-	defer e.Unlock()
-	e.lastMinuteLatency.addSize(value, sz)
-}
-
-// total returns the total call count and latency for the last minute.
-func (e *lockedLastMinuteLatency) total() AccElem {
-	e.Lock()
-	defer e.Unlock()
-	return e.lastMinuteLatency.getTotal()
-}
-
 func newXLStorageDiskIDCheck(storage *xlStorage) *xlStorageDiskIDCheck {
 	xl := xlStorageDiskIDCheck{
 		storage: storage,
 		health:  newDiskHealthTracker(),
 	}
 	for i := range xl.apiLatencies[:] {
-		xl.apiLatencies[i] = &lockedLastMinuteLatency{}
+		xl.apiLatencies[i] = &stats.LastMinuteLatency{}
 	}
 	return &xl
 }
@@ -574,7 +550,7 @@ func (p *xlStorageDiskIDCheck) updateStorageMetrics(s storageMetric, paths ...st
 		duration := time.Since(startTime)
 
 		atomic.AddUint64(&p.apiCalls[s], 1)
-		p.apiLatencies[s].add(duration)
+		p.apiLatencies[s].Add(duration)
 
 		if trace {
 			var errStr string

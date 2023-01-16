@@ -75,7 +75,7 @@ require (
 	github.com/rs/cors v1.8.3
 	github.com/rs/dnscache v0.0.0-20211102005908-e0241e321417
 	github.com/secure-io/sio-go v0.3.1
-	github.com/shirou/gopsutil/v3 v3.22.11
+	github.com/shirou/gopsutil/v3 v3.22.12
 	github.com/tinylib/msgp v1.1.7
 	github.com/valyala/bytebufferpool v1.0.0
 	github.com/xdg/scram v1.0.5
