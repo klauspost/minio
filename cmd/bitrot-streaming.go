@@ -24,6 +24,7 @@ import (
 	"io"
 	"sync"
 
+	"github.com/minio/minio/docs/bufiow"
 	xhttp "github.com/minio/minio/internal/http"
 	"github.com/minio/minio/internal/ioutil"
 )
@@ -32,6 +33,7 @@ import (
 type streamingBitrotWriter struct {
 	iow          io.WriteCloser
 	closeWithErr func(err error) error
+	flush        func() error
 	h            hash.Hash
 	shardSize    int64
 	canClose     *sync.WaitGroup
@@ -90,6 +92,21 @@ func newStreamingBitrotWriter(disk StorageAPI, origvolume, volume, filePath stri
 	r, w := io.Pipe()
 	h := algo.New()
 
+	// Insert a write buffer if the shardFileSize is greater than blockSize
+	// to reduce write syscalls to NIC.
+	// Local disks already have a buffer.
+	out := io.Writer(w)
+	var flush func() error
+	if !disk.IsLocal() && length > blockSizeV2 {
+		buf := globalBytePoolCap.Get()
+		buf = buf[:cap(buf)]
+		bw := bufiow.NewWriter(w, buf)
+		out = bw
+		flush = bw.Flush
+		// TODO: Handle errors flush, etc.
+		defer globalBytePoolCap.Put(buf)
+	}
+
 	bw := &streamingBitrotWriter{
 		iow:          ioutil.NewDeadlineWriter(w, globalDriveConfig.GetMaxTimeout()),
 		closeWithErr: w.CloseWithError,
@@ -108,6 +125,7 @@ func newStreamingBitrotWriter(disk StorageAPI, origvolume, volume, filePath stri
 		}
 		r.CloseWithError(disk.CreateFile(context.TODO(), origvolume, volume, filePath, totalFileSize, r))
 	}()
+
 	return bw
 }
 
