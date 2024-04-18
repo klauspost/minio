@@ -193,3 +193,16 @@ func tierLogIf(ctx context.Context, err error, errKind ...interface{}) {
 func kmsLogIf(ctx context.Context, err error, errKind ...interface{}) {
 	logger.LogIf(ctx, "kms", err, errKind...)
 }
+
+// KMSLogger permits access to kms module specific logging
+type KMSLogger struct{}
+
+// LogOnceIf is the implementation of LogOnceIf, accessible using the Logger interface
+func (l KMSLogger) LogOnceIf(ctx context.Context, err error, id string, errKind ...interface{}) {
+	logger.LogOnceIf(ctx, "kms", err, id, errKind...)
+}
+
+// LogIf is the implementation of LogIf, accessible using the Logger interface
+func (l KMSLogger) LogIf(ctx context.Context, err error, errKind ...interface{}) {
+	logger.LogIf(ctx, "kms", err, errKind...)
+}
