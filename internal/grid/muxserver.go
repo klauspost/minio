@@ -21,6 +21,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -139,6 +140,9 @@ func newMuxStream(ctx context.Context, msg message, c *Connection, handler Strea
 	go func() {
 		wg.Wait()
 		defer xioutil.SafeClose(send)
+		if fakeLag > 0 {
+			time.Sleep(fakeLag + time.Duration(rand.Int63n(int64(fakeLag))))
+		}
 		err := m.handleRequests(ctx, msg, send, handler, handlerIn)
 		if err != nil {
 			handlerErr.Store(err)
@@ -149,6 +153,9 @@ func newMuxStream(ctx context.Context, msg message, c *Connection, handler Strea
 	go func(outBlock <-chan struct{}) {
 		wg.Wait()
 		defer m.parent.deleteMux(true, m.ID)
+		if fakeLag > 0 {
+			time.Sleep(fakeLag + time.Duration(rand.Int63n(int64(fakeLag))))
+		}
 		m.sendResponses(ctx, send, c, &handlerErr, outBlock)
 	}(m.outBlock)
 
@@ -165,7 +172,15 @@ func newMuxStream(ctx context.Context, msg message, c *Connection, handler Strea
 // handleInbound sends unblocks when we have delivered the message to the handler.
 func (m *muxServer) handleInbound(c *Connection, inbound <-chan []byte, handlerIn chan<- []byte) {
 	for in := range inbound {
+		if fakeLag > 0 {
+			time.Sleep(fakeLag + time.Duration(rand.Int63n(int64(fakeLag))))
+		}
+
 		handlerIn <- in
+
+		if fakeLag > 0 {
+			time.Sleep(fakeLag + time.Duration(rand.Int63n(int64(fakeLag))))
+		}
 		m.send(message{Op: OpUnblockClMux, MuxID: m.ID, Flags: c.baseFlags})
 	}
 }
@@ -207,6 +222,10 @@ func (m *muxServer) sendResponses(ctx context.Context, toSend <-chan []byte, c *
 		}
 		msg.Payload = payload
 		msg.setZeroPayloadFlag()
+		if fakeLag > 0 {
+			time.Sleep(fakeLag + time.Duration(rand.Int63n(int64(fakeLag))))
+		}
+
 		m.send(msg)
 	}
 }

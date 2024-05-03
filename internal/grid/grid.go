@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sync"
 	"time"
 
@@ -178,4 +179,13 @@ func bytesOrLength(b []byte) string {
 		return fmt.Sprintf("%d bytes", len(b))
 	}
 	return fmt.Sprint(b)
+}
+
+var fakeLag time.Duration
+
+func init() {
+	if v := os.Getenv("_MINIO_CICD_FAKE_LAG"); v != "" {
+		fakeLag, _ = time.ParseDuration(v)
+		fmt.Println("Fake lag enabled:", fakeLag)
+	}
 }

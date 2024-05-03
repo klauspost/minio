@@ -1314,6 +1314,9 @@ func (c *Connection) handleRequest(ctx context.Context, m message, subID *subHan
 	// TODO: This causes allocations, but escape analysis doesn't really show the cause.
 	// If another faithful engineer wants to take a stab, feel free.
 	go func(m message) {
+		if fakeLag > 0 {
+			time.Sleep(fakeLag + time.Duration(rand.Int63n(int64(fakeLag))))
+		}
 		var start time.Time
 		if m.DeadlineMS > 0 {
 			start = time.Now()
@@ -1344,6 +1347,9 @@ func (c *Connection) handleRequest(ctx context.Context, m message, subID *subHan
 		}
 		if debugReqs {
 			fmt.Println(m.MuxID, c.StringReverse(), "RESPONDING")
+		}
+		if fakeLag > 0 {
+			time.Sleep(fakeLag + time.Duration(rand.Int63n(int64(fakeLag))))
 		}
 		m = message{
 			MuxID: m.MuxID,
