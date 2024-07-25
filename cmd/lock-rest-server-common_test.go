@@ -21,7 +21,6 @@ import (
 	"context"
 	"os"
 	"reflect"
-	"sync"
 	"testing"
 
 	"github.com/minio/minio/internal/dsync"
@@ -38,10 +37,7 @@ func createLockTestServer(ctx context.Context, t *testing.T) (string, *lockRESTS
 	}
 
 	locker := &lockRESTServer{
-		ll: &localLocker{
-			mutex:   sync.Mutex{},
-			lockMap: make(map[string][]lockRequesterInfo),
-		},
+		ll: newLocker(),
 	}
 	creds := globalActiveCred
 	token, err := authenticateNode(creds.AccessKey, creds.SecretKey)
@@ -74,41 +70,41 @@ func TestLockRpcServerRemoveEntry(t *testing.T) {
 		TimeLastRefresh: UTCNow().UnixNano(),
 	}
 
-	locker.ll.lockMap["name"] = []lockRequesterInfo{
+	locker.ll.lockMap.Store("name", []lockRequesterInfo{
 		lockRequesterInfo1,
 		lockRequesterInfo2,
-	}
+	})
 
-	lri := locker.ll.lockMap["name"]
+	lri, _ := locker.ll.lockMap.Load("name")
 
 	// test unknown uid
-	if locker.ll.removeEntry("name", dsync.LockArgs{
+	if locker.ll.removeEntryMap(dsync.LockArgs{
 		Owner: "owner",
 		UID:   "unknown-uid",
 	}, &lri) {
 		t.Errorf("Expected %#v, got %#v", false, true)
 	}
 
-	if !locker.ll.removeEntry("name", dsync.LockArgs{
+	if !locker.ll.removeEntryMap(dsync.LockArgs{
 		Owner: "owner",
 		UID:   "0123-4567",
 	}, &lri) {
 		t.Errorf("Expected %#v, got %#v", true, false)
 	} else {
-		gotLri := locker.ll.lockMap["name"]
+		gotLri, _ := locker.ll.lockMap.Load("name")
 		expectedLri := []lockRequesterInfo{lockRequesterInfo2}
 		if !reflect.DeepEqual(expectedLri, gotLri) {
 			t.Errorf("Expected %#v, got %#v", expectedLri, gotLri)
 		}
 	}
 
-	if !locker.ll.removeEntry("name", dsync.LockArgs{
+	if !locker.ll.removeEntryMap(dsync.LockArgs{
 		Owner: "owner",
 		UID:   "89ab-cdef",
 	}, &lri) {
 		t.Errorf("Expected %#v, got %#v", true, false)
 	} else {
-		gotLri := locker.ll.lockMap["name"]
+		gotLri, _ := locker.ll.lockMap.Load("name")
 		expectedLri := []lockRequesterInfo(nil)
 		if !reflect.DeepEqual(expectedLri, gotLri) {
 			t.Errorf("Expected %#v, got %#v", expectedLri, gotLri)

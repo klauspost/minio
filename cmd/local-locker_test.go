@@ -79,28 +79,28 @@ func TestLocalLockerExpire(t *testing.T) {
 
 		rResources[i] = arg.Resources[0]
 	}
-	if len(l.lockMap) != len(rResources)+len(wResources) {
-		t.Fatalf("lockmap len, got %d, want %d + %d", len(l.lockMap), len(rResources), len(wResources))
+	if l.lockMap.Size() != len(rResources)+len(wResources) {
+		t.Fatalf("lockmap len, got %d, want %d + %d", l.lockMap.Size(), len(rResources), len(wResources))
 	}
-	if len(l.lockUID) != len(rResources)+len(wResources) {
-		t.Fatalf("lockUID len, got %d, want %d + %d", len(l.lockUID), len(rResources), len(wResources))
+	if l.lockUID.Size() != len(rResources)+len(wResources) {
+		t.Fatalf("lockUID len, got %d, want %d + %d", l.lockUID.Size(), len(rResources), len(wResources))
 	}
 	// Expire an hour from now, should keep all
 	l.expireOldLocks(time.Hour)
-	if len(l.lockMap) != len(rResources)+len(wResources) {
-		t.Fatalf("lockmap len, got %d, want %d + %d", len(l.lockMap), len(rResources), len(wResources))
+	if l.lockMap.Size() != len(rResources)+len(wResources) {
+		t.Fatalf("lockmap len, got %d, want %d + %d", l.lockMap.Size(), len(rResources), len(wResources))
 	}
-	if len(l.lockUID) != len(rResources)+len(wResources) {
-		t.Fatalf("lockUID len, got %d, want %d + %d", len(l.lockUID), len(rResources), len(wResources))
+	if l.lockUID.Size() != len(rResources)+len(wResources) {
+		t.Fatalf("lockUID len, got %d, want %d + %d", l.lockUID.Size(), len(rResources), len(wResources))
 	}
 
 	// Expire a minute ago.
 	l.expireOldLocks(-time.Minute)
-	if len(l.lockMap) != 0 {
-		t.Fatalf("after cleanup should be empty, got %d", len(l.lockMap))
+	if l.lockMap.Size() != 0 {
+		t.Fatalf("after cleanup should be empty, got %d", l.lockMap.Size())
 	}
-	if len(l.lockUID) != 0 {
-		t.Fatalf("lockUID len, got %d, want %d", len(l.lockUID), 0)
+	if l.lockUID.Size() != 0 {
+		t.Fatalf("lockUID len, got %d, want %d", l.lockUID.Size(), 0)
 	}
 }
 
@@ -171,12 +171,12 @@ func TestLocalLockerUnlock(t *testing.T) {
 		rUIDs = append(rUIDs, uid)
 	}
 	// Each Lock has m entries
-	if len(l.lockMap) != len(rResources)+len(wResources)*m {
-		t.Fatalf("lockmap len, got %d, want %d + %d", len(l.lockMap), len(rResources), len(wResources)*m)
+	if l.lockMap.Size() != len(rResources)+len(wResources)*m {
+		t.Fatalf("lockmap len, got %d, want %d + %d", l.lockMap.Size(), len(rResources), len(wResources)*m)
 	}
 	// A UID is added for every resource
-	if len(l.lockUID) != len(rResources)*2+len(wResources)*m {
-		t.Fatalf("lockUID len, got %d, want %d + %d", len(l.lockUID), len(rResources)*2, len(wResources)*m)
+	if l.lockUID.Size() != len(rResources)*2+len(wResources)*m {
+		t.Fatalf("lockUID len, got %d, want %d + %d", l.lockUID.Size(), len(rResources)*2, len(wResources)*m)
 	}
 	// RUnlock once...
 	for i, name := range rResources {
@@ -197,13 +197,13 @@ func TestLocalLockerUnlock(t *testing.T) {
 	}
 
 	// Each Lock has m entries
-	if len(l.lockMap) != len(rResources)+len(wResources)*m {
-		t.Fatalf("lockmap len, got %d, want %d + %d", len(l.lockMap), len(rResources), len(wResources)*m)
+	if l.lockMap.Size() != len(rResources)+len(wResources)*m {
+		t.Fatalf("lockmap len, got %d, want %d + %d", l.lockMap.Size(), len(rResources), len(wResources)*m)
 	}
 	// A UID is added for every resource.
 	// We removed len(rResources) read sources.
-	if len(l.lockUID) != len(rResources)+len(wResources)*m {
-		t.Fatalf("lockUID len, got %d, want %d + %d", len(l.lockUID), len(rResources), len(wResources)*m)
+	if l.lockUID.Size() != len(rResources)+len(wResources)*m {
+		t.Fatalf("lockUID len, got %d, want %d + %d", l.lockUID.Size(), len(rResources), len(wResources)*m)
 	}
 
 	// RUnlock again, different uids
@@ -225,13 +225,13 @@ func TestLocalLockerUnlock(t *testing.T) {
 	}
 
 	// Each Lock has m entries
-	if len(l.lockMap) != 0+len(wResources)*m {
-		t.Fatalf("lockmap len, got %d, want %d + %d", len(l.lockMap), 0, len(wResources)*m)
+	if l.lockMap.Size() != 0+len(wResources)*m {
+		t.Fatalf("lockmap len, got %d, want %d + %d", l.lockMap.Size(), 0, len(wResources)*m)
 	}
 	// A UID is added for every resource.
 	// We removed Add Rlocked entries
-	if len(l.lockUID) != len(wResources)*m {
-		t.Fatalf("lockUID len, got %d, want %d + %d", len(l.lockUID), 0, len(wResources)*m)
+	if l.lockUID.Size() != len(wResources)*m {
+		t.Fatalf("lockUID len, got %d, want %d + %d", l.lockUID.Size(), 0, len(wResources)*m)
 	}
 
 	// Remove write locked
@@ -254,11 +254,11 @@ func TestLocalLockerUnlock(t *testing.T) {
 
 	// All should be gone now...
 	// Each Lock has m entries
-	if len(l.lockMap) != 0 {
-		t.Fatalf("lockmap len, got %d, want %d + %d", len(l.lockMap), 0, 0)
+	if l.lockMap.Size() != 0 {
+		t.Fatalf("lockmap len, got %d, want %d + %d", l.lockMap.Size(), 0, 0)
 	}
-	if len(l.lockUID) != 0 {
-		t.Fatalf("lockUID len, got %d, want %d + %d", len(l.lockUID), 0, 0)
+	if l.lockUID.Size() != 0 {
+		t.Fatalf("lockUID len, got %d, want %d + %d", l.lockUID.Size(), 0, 0)
 	}
 }
 
@@ -302,46 +302,47 @@ func Test_localLocker_expireOldLocksExpire(t *testing.T) {
 					}
 					start := time.Now()
 					l.expireOldLocks(time.Hour)
-					t.Logf("Scan Took: %v. Left: %d/%d", time.Since(start).Round(time.Millisecond), len(l.lockUID), len(l.lockMap))
-					if len(l.lockMap) != locks {
-						t.Fatalf("objects deleted, want %d != got %d", locks, len(l.lockMap))
+					t.Logf("Scan Took: %v. Left: %d/%d", time.Since(start).Round(time.Millisecond), l.lockUID.Size(), l.lockMap.Size())
+					if l.lockMap.Size() != locks {
+						t.Fatalf("objects deleted, want %d != got %d", locks, l.lockMap.Size())
 					}
-					if len(l.lockUID) != locks*readers {
-						t.Fatalf("objects deleted, want %d != got %d", locks*readers, len(l.lockUID))
+					if l.lockUID.Size() != locks*readers {
+						t.Fatalf("objects deleted, want %d != got %d", locks*readers, l.lockUID.Size())
 					}
 
 					// Expire 50%
 					expired := time.Now().Add(-time.Hour * 2)
-					for _, v := range l.lockMap {
+					l.lockMap.Range(func(_ string, v []lockRequesterInfo) bool {
 						for i := range v {
 							if rng.Intn(2) == 0 {
 								v[i].TimeLastRefresh = expired.UnixNano()
 							}
 						}
-					}
+						return true
+					})
 					start = time.Now()
 					l.expireOldLocks(time.Hour)
-					t.Logf("Expire 50%% took: %v. Left: %d/%d", time.Since(start).Round(time.Millisecond), len(l.lockUID), len(l.lockMap))
+					t.Logf("Expire 50%% took: %v. Left: %d/%d", time.Since(start).Round(time.Millisecond), l.lockUID.Size(), l.lockMap.Size())
 
-					if len(l.lockUID) == locks*readers {
+					if l.lockUID.Size() == locks*readers {
 						t.Fatalf("objects uids all remain, unlikely")
 					}
-					if len(l.lockMap) == 0 {
+					if l.lockMap.Size() == 0 {
 						t.Fatalf("objects all deleted, 0 remains")
 					}
-					if len(l.lockUID) == 0 {
+					if l.lockUID.Size() == 0 {
 						t.Fatalf("objects uids all deleted, 0 remains")
 					}
 
 					start = time.Now()
 					l.expireOldLocks(-time.Minute)
-					t.Logf("Expire rest took: %v. Left: %d/%d", time.Since(start).Round(time.Millisecond), len(l.lockUID), len(l.lockMap))
+					t.Logf("Expire rest took: %v. Left: %d/%d", time.Since(start).Round(time.Millisecond), l.lockUID.Size(), l.lockMap.Size())
 
-					if len(l.lockMap) != 0 {
-						t.Fatalf("objects not deleted, want %d != got %d", 0, len(l.lockMap))
+					if l.lockMap.Size() != 0 {
+						t.Fatalf("objects not deleted, want %d != got %d", 0, l.lockMap.Size())
 					}
-					if len(l.lockUID) != 0 {
-						t.Fatalf("objects not deleted, want %d != got %d", 0, len(l.lockUID))
+					if l.lockUID.Size() != 0 {
+						t.Fatalf("objects not deleted, want %d != got %d", 0, l.lockUID.Size())
 					}
 				})
 			}
@@ -368,6 +369,7 @@ func Test_localLocker_RUnlock(t *testing.T) {
 				}
 				t.Run(fmt.Sprintf("%d-read", readers), func(t *testing.T) {
 					l := newLocker()
+					start := time.Now()
 					for i := 0; i < locks; i++ {
 						var tmp [16]byte
 						rng.Read(tmp[:])
@@ -387,41 +389,45 @@ func Test_localLocker_RUnlock(t *testing.T) {
 							}
 						}
 					}
+					t.Log("RLock tool", time.Since(start).Round(time.Millisecond))
 
 					// Expire 50%
 					toUnLock := make([]dsync.LockArgs, 0, locks*readers)
-					for k, v := range l.lockMap {
+					l.lockMap.Range(func(k string, v []lockRequesterInfo) bool {
 						for _, lock := range v {
 							if rng.Intn(2) == 0 {
 								toUnLock = append(toUnLock, dsync.LockArgs{Resources: []string{k}, UID: lock.UID})
 							}
 						}
-					}
-					start := time.Now()
+						return true
+					})
+					start = time.Now()
 					for _, lock := range toUnLock {
-						ok, err := l.ForceUnlock(context.Background(), lock)
+						ok, err := l.RUnlock(context.Background(), lock)
 						if err != nil || !ok {
 							t.Fatal(err)
 						}
 					}
-					t.Logf("Expire 50%% took: %v. Left: %d/%d", time.Since(start).Round(time.Millisecond), len(l.lockUID), len(l.lockMap))
+					t.Logf("Expire 50%% took: %v. Left: %d/%d", time.Since(start).Round(time.Millisecond), l.lockUID.Size(), l.lockMap.Size())
 
-					if len(l.lockUID) == locks*readers {
+					if l.lockUID.Size() == locks*readers {
 						t.Fatalf("objects uids all remain, unlikely")
 					}
-					if len(l.lockMap) == 0 && locks > 10 {
+					if l.lockMap.Size() == 0 && locks > 10 {
 						t.Fatalf("objects all deleted, 0 remains")
 					}
-					if len(l.lockUID) != locks*readers-len(toUnLock) {
-						t.Fatalf("want %d objects uids all deleted, %d remains", len(l.lockUID), locks*readers-len(toUnLock))
+					if l.lockUID.Size() != locks*readers-len(toUnLock) {
+						t.Fatalf("want %d objects uids all deleted, %d remains", l.lockUID.Size(), locks*readers-len(toUnLock))
 					}
 
 					toUnLock = toUnLock[:0]
-					for k, v := range l.lockMap {
+					l.lockMap.Range(func(k string, v []lockRequesterInfo) bool {
 						for _, lock := range v {
 							toUnLock = append(toUnLock, dsync.LockArgs{Resources: []string{k}, UID: lock.UID, Owner: lock.Owner})
 						}
-					}
+						return true
+					})
+
 					start = time.Now()
 					for _, lock := range toUnLock {
 						ok, err := l.RUnlock(context.TODO(), lock)
@@ -429,13 +435,13 @@ func Test_localLocker_RUnlock(t *testing.T) {
 							t.Fatal(err)
 						}
 					}
-					t.Logf("Expire rest took: %v. Left: %d/%d", time.Since(start).Round(time.Millisecond), len(l.lockUID), len(l.lockMap))
+					t.Logf("Expire rest took: %v. Left: %d/%d", time.Since(start).Round(time.Millisecond), l.lockUID.Size(), l.lockMap.Size())
 
-					if len(l.lockMap) != 0 {
-						t.Fatalf("objects not deleted, want %d != got %d", 0, len(l.lockMap))
+					if l.lockMap.Size() != 0 {
+						t.Fatalf("objects not deleted, want %d != got %d", 0, l.lockMap.Size())
 					}
-					if len(l.lockUID) != 0 {
-						t.Fatalf("objects not deleted, want %d != got %d", 0, len(l.lockUID))
+					if l.lockUID.Size() != 0 {
+						t.Fatalf("objects not deleted, want %d != got %d", 0, l.lockUID.Size())
 					}
 				})
 			}
