@@ -23,6 +23,7 @@ import (
 	"errors"
 	"math"
 	"net/url"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -563,10 +564,10 @@ type ArrayOf[T RoundTripper] struct {
 
 // NewArrayOf returns a new ArrayOf.
 // You must provide a function that returns a new instance of T.
-func NewArrayOf[T RoundTripper](newFn func() T) *ArrayOf[T] {
+func NewArrayOf[T RoundTripper]() *ArrayOf[T] {
 	return &ArrayOf[T]{
 		ePool: sync.Pool{New: func() any {
-			return newFn()
+			return newRT[T](nil)
 		}},
 	}
 }
@@ -709,4 +710,25 @@ func (j *Array[T]) UnmarshalMsg(bytes []byte) ([]byte, error) {
 		j.val = append(j.val, v)
 	}
 	return bytes, nil
+}
+
+func newRT[T RoundTripper](fn func() T) func() T {
+	if fn != nil {
+		return fn
+	}
+	return func() T {
+		var t T
+		// Use reflection to get the type of T
+		ptrType := reflect.TypeOf(t)
+
+		// T will always have a pointer type, so we create a new element.
+		elemType := ptrType.Elem()
+
+		// Create a new instance of T using reflect.New
+		// This will create a pointer to the element.
+		newValue := reflect.New(elemType)
+
+		ptr := newValue.Interface().(T)
+		return ptr
+	}
 }

@@ -145,7 +145,7 @@ func (s *bootstrapRESTServer) VerifyHandler(params *grid.MSS) (*ServerSystemConf
 	return getServerSystemCfg(), nil
 }
 
-var serverVerifyHandler = grid.NewSingleHandler[*grid.MSS, *ServerSystemConfig](grid.HandlerServerVerify, grid.NewMSS, func() *ServerSystemConfig { return &ServerSystemConfig{} })
+var serverVerifyHandler = grid.NewSingleHandler[*grid.MSS, *ServerSystemConfig](grid.HandlerServerVerify, grid.NewMSS, nil)
 
 // registerBootstrapRESTHandlers - register bootstrap rest router.
 func registerBootstrapRESTHandlers(gm *grid.Manager) {

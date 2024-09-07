@@ -442,12 +442,13 @@ func recycleFunc[RT RoundTripper](newRT func() RT) (newFn func() RT, recycle fun
 }
 
 // NewSingleHandler creates a typed handler that can provide Marshal/Unmarshal.
-// Use Register to register a server handler.
+// Use Register to register a server handler
+// New functions can be provided, or be nil to have reflection create instances.
 // Use Call to initiate a clientside call.
 func NewSingleHandler[Req, Resp RoundTripper](h HandlerID, newReq func() Req, newResp func() Resp) *SingleHandler[Req, Resp] {
 	s := SingleHandler[Req, Resp]{id: h}
-	s.newReq, s.recycleReq = recycleFunc[Req](newReq)
-	s.newResp, s.recycleResp = recycleFunc[Resp](newResp)
+	s.newReq, s.recycleReq = recycleFunc[Req](newRT[Req](newReq))
+	s.newResp, s.recycleResp = recycleFunc[Resp](newRT[Resp](newResp))
 	if _, ok := any(newReq()).(Recycler); ok {
 		s.callReuseReq = true
 	}
@@ -643,9 +644,7 @@ type StreamTypeHandler[Payload, Req, Resp RoundTripper] struct {
 // newPayload can be nil. In that case payloads will always be nil.
 // newReq can be nil. In that case no input stream is expected and the handler will be called with nil 'in' channel.
 func NewStream[Payload, Req, Resp RoundTripper](h HandlerID, newPayload func() Payload, newReq func() Req, newResp func() Resp) *StreamTypeHandler[Payload, Req, Resp] {
-	if newResp == nil {
-		panic("newResp missing in NewStream")
-	}
+	newResp = newRT[Resp](newResp)
 
 	s := newStreamHandler[Payload, Req, Resp](h)
 	if newReq != nil {

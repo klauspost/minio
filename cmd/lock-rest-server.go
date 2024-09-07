@@ -103,11 +103,7 @@ var (
 )
 
 func newLockHandler(h grid.HandlerID) *grid.SingleHandler[*dsync.LockArgs, *dsync.LockResp] {
-	return grid.NewSingleHandler[*dsync.LockArgs, *dsync.LockResp](h, func() *dsync.LockArgs {
-		return &dsync.LockArgs{}
-	}, func() *dsync.LockResp {
-		return &dsync.LockResp{}
-	})
+	return grid.NewSingleHandler[*dsync.LockArgs, *dsync.LockResp](h, nil, nil)
 }
 
 // registerLockRESTHandlers - register lock rest router.

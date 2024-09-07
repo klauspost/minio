@@ -30,6 +30,7 @@ import (
 	"testing"
 	"time"
 
+	jsoniter "github.com/json-iterator/go"
 	"github.com/minio/minio/internal/logger/target/testlogger"
 )
 
@@ -193,11 +194,7 @@ func TestSingleRoundtripGenerics(t *testing.T) {
 	remote := grid.Managers[1]
 
 	// 1: Echo
-	h1 := NewSingleHandler[*testRequest, *testResponse](handlerTest, func() *testRequest {
-		return &testRequest{}
-	}, func() *testResponse {
-		return &testResponse{}
-	})
+	h1 := NewSingleHandler[*testRequest, *testResponse](handlerTest, nil, nil)
 	// Handles incoming requests, returns a response
 	handler1 := func(req *testRequest) (resp *testResponse, err *RemoteErr) {
 		resp = h1.NewResponse()
@@ -209,7 +206,7 @@ func TestSingleRoundtripGenerics(t *testing.T) {
 		return resp, nil
 	}
 	// Return error
-	h2 := NewSingleHandler[*testRequest, *testResponse](handlerTest2, newTestRequest, newTestResponse)
+	h2 := NewSingleHandler[*testRequest, *testResponse](handlerTest2, nil, nil)
 	handler2 := func(req *testRequest) (resp *testResponse, err *RemoteErr) {
 		r := RemoteErr(req.String)
 		return nil, &r
@@ -931,7 +928,7 @@ func testGenericsStreamRoundtripSubroute(t *testing.T, local, remote *Manager) {
 
 	// We fake a local and remote server.
 	remoteHost := remote.HostName()
-	handler := NewStream[*testRequest, *testRequest, *testResponse](handlerTest, newTestRequest, newTestRequest, newTestResponse)
+	handler := NewStream[*testRequest, *testRequest, *testResponse](handlerTest, newTestRequest, newTestRequest, nil)
 	handler.InCapacity = 1
 	handler.OutCapacity = 1
 	const payloads = 10
@@ -1326,4 +1323,18 @@ func (i State) String() string {
 		return "State(" + strconv.FormatInt(int64(i), 10) + ")"
 	}
 	return stateName[stateIndex[i]:stateIndex[i+1]]
+}
+
+func TestIter(t *testing.T) {
+	b := bytes.Repeat([]byte(`{"a":`), 1<<20)
+
+	json := jsoniter.ConfigCompatibleWithStandardLibrary
+	var ctx struct {
+		B string `json:"b"`
+	}
+	if err := json.Unmarshal(b, &ctx); err == nil {
+		t.Fatal("kept parsing")
+	} else {
+		t.Log(err)
+	}
 }

@@ -46,7 +46,7 @@ func benchmarkGridRequests(b *testing.B, n int) {
 			b.Fatal(err)
 		}
 	}
-	rpc := NewSingleHandler[*testRequest, *testResponse](handlerTest2, newTestRequest, newTestResponse)
+	rpc := NewSingleHandler[*testRequest, *testResponse](handlerTest2, nil, nil)
 	grid, err := SetupTestGrid(n)
 	errFatal(err)
 	b.Cleanup(grid.Cleanup)
