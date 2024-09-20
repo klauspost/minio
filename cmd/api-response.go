@@ -365,9 +365,13 @@ type Object struct {
 	// The class of storage used to store the object.
 	StorageClass string
 
+	// Checksum used when uploading.
+	ChecksumAlgorithm string `xml:"ChecksumAlgorithm,omitempty"`
+
 	// UserMetadata user-defined metadata
-	UserMetadata *Metadata `xml:"UserMetadata,omitempty"`
-	UserTags     string    `xml:"UserTags,omitempty"`
+	UserMetadata *Metadata         `xml:"UserMetadata,omitempty"`
+	UserTags     string            `xml:"UserTags,omitempty"`
+	Checksums    map[string]string `xml:"Checksums,omitempty"`
 
 	Internal *ObjectInternalInfo `xml:"Internal,omitempty"`
 }
@@ -568,6 +572,8 @@ func generateListVersionsResponse(ctx context.Context, bucket, prefix, marker, v
 		content := ObjectVersion{}
 		content.Key = s3EncodeName(object.Name, encodingType)
 		content.LastModified = amztime.ISO8601Format(object.ModTime.UTC())
+		content.ChecksumAlgorithm = hash.ReadChecksumsType(object.Checksum).String()
+
 		if object.ETag != "" {
 			content.ETag = "\"" + object.ETag + "\""
 		}
@@ -599,6 +605,7 @@ func generateListVersionsResponse(ctx context.Context, bucket, prefix, marker, v
 				K: object.DataBlocks,
 				M: object.ParityBlocks,
 			}
+			content.Checksums = hash.ReadCheckSums(object.Checksum, 0)
 		}
 		content.Owner = owner
 		content.VersionID = object.VersionID
@@ -712,6 +719,7 @@ func generateListObjectsV2Response(ctx context.Context, bucket, prefix, token, n
 			content.StorageClass = globalMinioDefaultStorageClass
 		}
 		content.Owner = owner
+		content.ChecksumAlgorithm = hash.ReadChecksumsType(object.Checksum).String()
 		if metadata != nil {
 			if metadata(object.Name, policy.GetObjectTaggingAction) == ErrNone {
 				content.UserTags = object.UserTags
@@ -734,6 +742,7 @@ func generateListObjectsV2Response(ctx context.Context, bucket, prefix, token, n
 					K: object.DataBlocks,
 					M: object.ParityBlocks,
 				}
+				content.Checksums = hash.ReadCheckSums(object.Checksum, 0)
 			}
 		}
 		contents = append(contents, content)

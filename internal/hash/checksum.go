@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"hash"
 	"hash/crc32"
+	"math/bits"
 	"net/http"
 	"strconv"
 	"strings"
@@ -117,6 +118,12 @@ func (c ChecksumType) RawByteLen() int {
 	return 0
 }
 
+// IsSingleKnown returns whether the type is valid and known and only one algorithm is set.
+func (c ChecksumType) IsSingleKnown() bool {
+	count := bits.OnesCount32(uint32(c & (ChecksumCRC32 | ChecksumCRC32C | ChecksumSHA1 | ChecksumSHA256)))
+	return c.IsSet() && count == 1
+}
+
 // IsSet returns whether the type is valid and known.
 func (c ChecksumType) IsSet() bool {
 	return !c.Is(ChecksumInvalid) && !c.Is(ChecksumNone)
@@ -190,6 +197,20 @@ func NewChecksumFromData(t ChecksumType, data []byte) *Checksum {
 		return nil
 	}
 	return &c
+}
+
+// ReadChecksumsType will read and return the first checksum type from b.
+func ReadChecksumsType(b []byte) ChecksumType {
+	if len(b) > 0 {
+		t, n := binary.Uvarint(b)
+		if n > 0 {
+			typ := ChecksumType(t)
+			if typ.IsSingleKnown() {
+				return typ
+			}
+		}
+	}
+	return ChecksumNone
 }
 
 // ReadCheckSums will read checksums from b and return them.

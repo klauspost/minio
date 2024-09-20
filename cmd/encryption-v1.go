@@ -100,7 +100,7 @@ func kmsKeyIDFromMetadata(metadata map[string]string) string {
 	return ARNPrefix + kmsID
 }
 
-// DecryptETags decryptes the ETag of all ObjectInfos using the KMS.
+// DecryptETags decrypts the ETag and Checksums of all ObjectInfos using the KMS.
 //
 // It adjusts the size of all encrypted objects since encrypted
 // objects are slightly larger due to encryption overhead.
@@ -131,7 +131,7 @@ func DecryptETags(ctx context.Context, k *kms.KMS, objects []ObjectInfo) error {
 		metadata = metadata[:0:N]
 		buckets = buckets[:0:N]
 		names = names[:0:N]
-		SSES3SinglePartObjects := make(map[int]bool)
+		SSES3SinglePartObjects := make(map[int]bool, N)
 		for i, object := range batch {
 			if kind, ok := crypto.IsEncrypted(object.UserDefined); ok && kind == crypto.S3 && !crypto.IsMultiPart(object.UserDefined) {
 				ETag, err := etag.Parse(object.ETag)
@@ -140,35 +140,11 @@ func DecryptETags(ctx context.Context, k *kms.KMS, objects []ObjectInfo) error {
 				}
 				if ETag.IsEncrypted() {
 					SSES3SinglePartObjects[i] = true
-					metadata = append(metadata, object.UserDefined)
-					buckets = append(buckets, object.Bucket)
-					names = append(names, object.Name)
 				}
+				metadata = append(metadata, object.UserDefined)
+				buckets = append(buckets, object.Bucket)
+				names = append(names, object.Name)
 			}
-		}
-
-		// If there are no SSE-S3 single-part objects
-		// we can skip the decryption process. However,
-		// we still have to adjust the size and ETag
-		// of SSE-C and SSE-KMS objects.
-		if len(SSES3SinglePartObjects) == 0 {
-			for i := range batch {
-				size, err := batch[i].GetActualSize()
-				if err != nil {
-					return err
-				}
-				batch[i].Size = size
-
-				if _, ok := crypto.IsEncrypted(batch[i].UserDefined); ok {
-					ETag, err := etag.Parse(batch[i].ETag)
-					if err != nil {
-						return err
-					}
-					batch[i].ETag = ETag.Format().String()
-				}
-			}
-			objects = objects[N:]
-			continue
 		}
 
 		// There is at least one SSE-S3 single-part object.
@@ -184,17 +160,19 @@ func DecryptETags(ctx context.Context, k *kms.KMS, objects []ObjectInfo) error {
 		// objects and adjust the size and ETags of all encrypted
 		// objects.
 		for i := range batch {
-			size, err := batch[i].GetActualSize()
+			obj := &batch[i] // Pointer to array element
+			size, err := obj.GetActualSize()
 			if err != nil {
 				return err
 			}
-			batch[i].Size = size
+			obj.Size = size
 
-			if _, ok := crypto.IsEncrypted(batch[i].UserDefined); ok {
-				ETag, err := etag.Parse(batch[i].ETag)
+			if _, ok := crypto.IsEncrypted(obj.UserDefined); ok {
+				ETag, err := etag.Parse(obj.ETag)
 				if err != nil {
 					return err
 				}
+				key := keys[0][:]
 				if SSES3SinglePartObjects[i] {
 					ETag, err = etag.Decrypt(keys[0][:], ETag)
 					if err != nil {
@@ -202,7 +180,19 @@ func DecryptETags(ctx context.Context, k *kms.KMS, objects []ObjectInfo) error {
 					}
 					keys = keys[1:]
 				}
-				batch[i].ETag = ETag.Format().String()
+				obj.ETag = ETag.Format().String()
+				// Checksum:
+				if crypto.SSEC.IsEncrypted(obj.UserDefined) {
+					// We cannot do SSE-C
+					obj.Checksum = nil
+				} else {
+					mac := hmac.New(sha256.New, key)
+					mac.Write([]byte("object-checksum"))
+					decrypted, err := sio.DecryptBuffer(nil, obj.Checksum, sio.Config{Key: mac.Sum(nil), CipherSuites: fips.DARECiphers()})
+					if err == nil {
+						obj.Checksum = decrypted
+					}
+				}
 			}
 		}
 		objects = objects[N:]
